@@ -20,7 +20,7 @@ namespace Lux
 	
 Model::~Model()
 {
-	LUX_DELETE(m_geometry);
+	ASSERT(isEmpty());
 }
 
 
@@ -40,13 +40,14 @@ RayCastModelHit Model::castRay(const Vec3& origin, const Vec3& dir, const Matrix
 	Vec3 local_dir = static_cast<Vec3>(inv * Vec4(dir.x, dir.y, dir.z, 0));
 
 	const Array<Vec3>& vertices = m_geometry->getVertices();
+	const Array<int32_t>& indices = m_geometry->getIndices();
 
 	int32_t last_hit_index = -1;
-	for(int i = 0; i < vertices.size(); i += 3)
+	for(int i = 0; i < indices.size(); i += 3)
 	{
-		Vec3 p0 = vertices[i];
-		Vec3 p1 = vertices[i+1];
-		Vec3 p2 = vertices[i+2];
+		Vec3 p0 = vertices[indices[i]];
+		Vec3 p1 = vertices[indices[i+1]];
+		Vec3 p2 = vertices[indices[i+2]];
 		Vec3 normal = crossProduct(p1 - p0, p2 - p0);
 		float q = dotProduct(normal, local_dir);
 		if(q == 0)
@@ -141,21 +142,28 @@ bool Model::parseVertexDef(FS::IFile* file, VertexDef* vertex_definition)
 
 bool Model::parseGeometry(FS::IFile* file, const VertexDef& vertex_definition)
 {
-	int tri_count = 0;
-	file->read(&tri_count, sizeof(tri_count));
-	if (tri_count <= 0)
+	int32_t indices_count = 0;
+	file->read(&indices_count, sizeof(indices_count));
+	if (indices_count <= 0)
 	{
 		return false;
 	}
-	Array<uint8_t> data;
-	int data_size = vertex_definition.getVertexSize() * tri_count * 3;
-	data.resize(data_size);
-	if (!file->read(&data[0], data_size))
+	Array<int32_t> indices;
+	indices.resize(indices_count);
+	file->read(&indices[0], sizeof(indices[0]) * indices_count);
+	
+	int32_t vertices_count = 0;
+	file->read(&vertices_count, sizeof(vertices_count));
+	if (vertices_count <= 0)
 	{
 		return false;
 	}
+	Array<float> vertices;
+	vertices.resize(vertices_count * vertex_definition.getVertexSize() / sizeof(vertices[0]));
+	file->read(&vertices[0], sizeof(vertices[0]) * vertices.size());
+	
 	m_geometry = LUX_NEW(Geometry);
-	m_geometry->copy(&data[0], data_size, vertex_definition);
+	m_geometry->copy((uint8_t*)&vertices[0], sizeof(float) * vertices.size(), indices, vertex_definition);
 	return true;
 }
 

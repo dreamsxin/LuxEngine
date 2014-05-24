@@ -15,6 +15,11 @@
 namespace Lux
 {
 
+Material::~Material()
+{
+	ASSERT(isEmpty());
+}
+
 void Material::apply(Renderer& renderer, PipelineInstance& pipeline)
 {
 	if(getState() == State::READY)
@@ -92,6 +97,18 @@ FS::ReadCallback Material::getReadCallback()
 	return rc;
 }
 
+bool Material::save(ISerializer& serializer)
+{
+	serializer.beginObject();
+	serializer.serialize("shader", m_shader->getPath().c_str());
+	for (int i = 0; i < m_textures.size(); ++i)
+	{
+		serializer.serialize("texture", m_textures[i]->getPath().c_str());
+	}
+	serializer.endObject();
+	return false;
+}
+
 void Material::deserializeUniforms(ISerializer& serializer)
 {
 	serializer.deserializeArrayBegin();
@@ -137,6 +154,53 @@ void Material::deserializeUniforms(ISerializer& serializer)
 		serializer.deserializeObjectEnd();
 	}
 	serializer.deserializeArrayEnd();
+}
+
+void Material::removeTexture(int i)
+{
+	if (m_textures[i])
+	{
+		removeDependency(*m_textures[i]);
+		m_resource_manager.get(ResourceManager::TEXTURE)->unload(*m_textures[i]);
+	}
+	m_textures.erase(i);
+}
+
+void Material::setTexture(int i, Texture* texture)
+{ 
+	if (m_textures[i])
+	{
+		removeDependency(*m_textures[i]);
+		m_resource_manager.get(ResourceManager::TEXTURE)->unload(*m_textures[i]);
+	}
+	if (texture)
+	{
+		addDependency(*texture);
+	}
+	m_textures[i] = texture; 
+}
+
+void Material::addTexture(Texture* texture)
+{
+	if (texture)
+	{
+		addDependency(*texture);
+	}
+	m_textures.push(texture);
+}
+
+void Material::setShader(Shader* shader)
+{
+	if (m_shader)
+	{ 
+		removeDependency(*m_shader);
+		m_resource_manager.get(ResourceManager::SHADER)->unload(*m_shader);
+	}
+	m_shader = shader;
+	if (m_shader)
+	{
+		addDependency(*m_shader);
+	}
 }
 
 void Material::loaded(FS::IFile* file, bool success, FS::FileSystem& fs)
