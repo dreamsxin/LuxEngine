@@ -4,18 +4,15 @@
 
 namespace Lux
 {
-	struct LUX_CORE_API Frustum
+	struct Frustum
 	{
-		void compute(const Vec3& position, const Vec3& direction, const Vec3& up, float fov, float ratio, float near, float far)
-		{
-			//Vec3 dir, nc, fc;
+		inline Frustum() {}
 
-			// compute width and height of the near and far plane sections
-			float tang = (float)tan(ANG2RAD * fov * 0.5);
+		inline void compute(const Vec3& position, const Vec3& direction, const Vec3& up, float fov, float ratio, float near, float far)
+		{
+			float tang = (float)tan(3.14159265f / 180.0f * fov * 0.5f);
 			float nh = near * tang;
 			float nw = nh * ratio;
-			float fh = far  * tang;
-			float fw = fh * ratio;
 
 			Vec3 Z = position - direction;
 			Z.normalize();
@@ -25,8 +22,8 @@ namespace Lux
 
 			Vec3 Y = crossProduct(Z, X);
 
-			Vec3 nc = p - Z * near;
-			Vec3 fc = p - Z * far;
+			Vec3 nc = position - Z * near;
+			Vec3 fc = position - Z * far;
 
 			m_plane[(uint32_t)Sides::NEAR].set(-Z, nc);
 			m_plane[(uint32_t)Sides::FAR].set(Z, fc);
@@ -50,6 +47,20 @@ namespace Lux
 			aux.normalize();
 			normal = crossProduct(Y, aux);
 			m_plane[(uint32_t)Sides::RIGHT].set(normal, nc + X*nw);
+		}
+
+		bool sphereInFrustum(const Vec3 &p, float radius) const
+		{
+			for (int i = 0; i < (uint32_t)Sides::COUNT; i++) 
+			{
+				float distance = m_plane[i].distance(p);
+				if (distance < -radius)
+					return false;
+				else if (distance < radius)
+					return true;
+			}
+
+			return true;
 		}
 
 		enum class Sides : uint32_t	{ NEAR, FAR, LEFT, RIGHT, TOP, BOTTOM, COUNT };

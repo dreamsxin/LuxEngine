@@ -7,6 +7,8 @@
 
 namespace Lux
 {
+	struct Frustum;
+
 	class LUX_ENGINE_API CullingSystem
 	{
 	public:
@@ -15,6 +17,10 @@ namespace Lux
 
 		void create();
 		void destroy();
+
+		const Array<bool>& getResult();
+
+		void cullToFrustum(const Frustum& frustum);
 
 		//// test
 		void insert(const Array<Sphere>& spheres);
