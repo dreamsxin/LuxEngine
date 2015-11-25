@@ -3,29 +3,120 @@
 #include <PxPhysicsAPI.h>
 
 #include "cooking/PxCooking.h"
+#include "core/base_proxy_allocator.h"
 #include "core/crc32.h"
 #include "core/log.h"
-#include "editor/editor_server.h"
-#include "editor/property_descriptor.h"
-#include "engine/engine.h"
+#include "core/resource_manager.h"
+#include "editor/world_editor.h"
+#include "engine.h"
+#include "physics/physics_geometry_manager.h"
 #include "physics/physics_scene.h"
-#include "physics/physics_system_impl.h"
-#include "universe/component_event.h"
-#include "universe/entity_moved_event.h"
+#include "renderer/render_scene.h"
+#include "universe/universe.h"
 
 
-namespace Lux
+namespace Lumix
 {
 
 
-static const uint32_t box_rigid_actor_type = crc32("box_rigid_actor");
-static const uint32_t controller_type = crc32("physical_controller");
+static const uint32 BOX_ACTOR_HASH = crc32("box_rigid_actor");
+static const uint32 MESH_ACTOR_HASH = crc32("mesh_rigid_actor");
+static const uint32 CONTROLLER_HASH = crc32("physical_controller");
+static const uint32 HEIGHTFIELD_HASH = crc32("physical_heightfield");
 
 
-extern "C" IPlugin* createPlugin()
+
+struct PhysicsSystemImpl : public PhysicsSystem
 {
-	return LUX_NEW(PhysicsSystem)();
+	PhysicsSystemImpl(Engine& engine)
+		: m_allocator(engine.getAllocator())
+		, m_engine(engine)
+		, m_manager(*this, engine.getAllocator())
+	{
+		m_manager.create(ResourceManager::PHYSICS, engine.getResourceManager());
+	}
+
+	bool create() override;
+	IScene* createScene(UniverseContext& universe) override;
+	void destroyScene(IScene* scene) override;
+	void destroy() override;
+
+	physx::PxPhysics* getPhysics() override
+	{
+		return m_physics;
+	}
+
+	physx::PxCooking* getCooking() override
+	{
+		return m_cooking;
+	}
+	
+	bool connect2VisualDebugger();
+
+	physx::PxPhysics*			m_physics;
+	physx::PxFoundation*		m_foundation;
+	physx::PxControllerManager*	m_controller_manager;
+	physx::PxAllocatorCallback*	m_physx_allocator;
+	physx::PxErrorCallback*		m_error_callback;
+	physx::PxCooking*			m_cooking;
+	PhysicsGeometryManager		m_manager;
+	class Engine&				m_engine;
+	class BaseProxyAllocator	m_allocator;
+};
+
+
+extern "C" LUMIX_PHYSICS_API IPlugin* createPlugin(Engine& engine)
+{
+	return LUMIX_NEW(engine.getAllocator(), PhysicsSystemImpl)(engine);
 }
+
+
+struct EditorPlugin : public WorldEditor::Plugin
+{
+	EditorPlugin(WorldEditor& editor)
+		: m_editor(editor)
+	{
+	}
+
+	bool showGizmo(ComponentUID cmp) override
+	{
+		PhysicsScene* phy_scene = static_cast<PhysicsScene*>(cmp.scene);
+		if (cmp.type == CONTROLLER_HASH)
+		{
+			auto* scene = static_cast<RenderScene*>(m_editor.getScene(crc32("renderer")));
+			float height = phy_scene->getControllerHeight(cmp.index);
+			float radius = phy_scene->getControllerRadius(cmp.index);
+
+			Universe& universe = scene->getUniverse();
+			Vec3 pos = universe.getPosition(cmp.entity);
+			scene->addDebugCapsule(pos, height, radius, 0xff0000ff, 0);
+			return true;
+		}
+
+		if (cmp.type == BOX_ACTOR_HASH)
+		{
+			auto* scene = static_cast<RenderScene*>(m_editor.getScene(crc32("renderer")));
+			Vec3 extents = phy_scene->getHalfExtents(cmp.index);
+
+			Universe& universe = scene->getUniverse();
+			Matrix mtx = universe.getMatrix(cmp.entity);
+
+			scene->addDebugCube(mtx.getTranslation(),
+				mtx.getXVector() * extents.x,
+				mtx.getYVector() * extents.y,
+				mtx.getZVector() * extents.z,
+				0xffff0000,
+				0);
+			return true;
+
+		}
+
+		return false;
+	}
+
+	WorldEditor& m_editor;
+};
+
 
 
 struct CustomErrorCallback : public physx::PxErrorCallback
@@ -33,108 +124,72 @@ struct CustomErrorCallback : public physx::PxErrorCallback
 	virtual void reportError(physx::PxErrorCode::Enum code, const char* message, const char* file, int line);
 };
 
-
-void PhysicsSystem::onCreateUniverse(Universe& universe)
+IScene* PhysicsSystemImpl::createScene(UniverseContext& ctx)
 {
-	m_impl->m_scene = LUX_NEW(PhysicsScene)();
-	m_impl->m_scene->create(*this, universe);
+	return PhysicsScene::create(*this, *ctx.m_universe, m_engine, m_allocator);
 }
 
 
-void PhysicsSystem::onDestroyUniverse(Universe& universe)
+void PhysicsSystemImpl::destroyScene(IScene* scene)
 {
-	m_impl->m_scene->destroy();
-	LUX_DELETE(m_impl->m_scene);
-	m_impl->m_scene = NULL;
+	PhysicsScene::destroy(static_cast<PhysicsScene*>(scene));
 }
 
 
-void PhysicsSystem::serialize(ISerializer& serializer)
+class AssertNullAllocator : public physx::PxAllocatorCallback
 {
-	m_impl->m_scene->serialize(serializer);
-}
+	public:
+		void* allocate(size_t size, const char*, const char*, int) override
+		{
+			void* ret = _aligned_malloc(size, 16);
+			// g_log_info.log("PhysX") << "Allocated " << size << " bytes for " << typeName << "
+			// from " << filename << "(" << line << ")";
+			ASSERT(ret);
+			return ret;
+		}
+		void deallocate(void* ptr) override
+		{
+			_aligned_free(ptr);
+		}
+};
 
 
-void PhysicsSystem::deserialize(ISerializer& serializer)
+bool PhysicsSystemImpl::create()
 {
-	m_impl->m_scene->deserialize(serializer);
-}
-
-
-void PhysicsSystem::sendMessage(const char* message)
-{
-	if(strcmp("render", message) == 0)
-	{
-		m_impl->m_scene->render();
-	}
-}
-
-
-Component PhysicsSystem::createComponent(uint32_t component_type, const Entity& entity)
-{
-	if(component_type == controller_type)
-	{
-		return m_impl->m_scene->createController(entity);
-	}
-	else if(component_type == box_rigid_actor_type)
-	{
-		return m_impl->m_scene->createBoxRigidActor(entity);
-	}
-	return Component::INVALID;
-}
-
-
-void PhysicsSystem::update(float dt)
-{
-	m_impl->m_scene->update(dt);
-}
-
-
-bool PhysicsSystem::create(Engine& engine)
-{
-	engine.getEditorServer()->registerProperty("box_rigid_actor", LUX_NEW(PropertyDescriptor<PhysicsScene>)(crc32("dynamic"), &PhysicsScene::getIsDynamic, &PhysicsScene::setIsDynamic));
-	engine.getEditorServer()->registerProperty("box_rigid_actor", LUX_NEW(PropertyDescriptor<PhysicsScene>)(crc32("size"), &PhysicsScene::getHalfExtents, &PhysicsScene::setHalfExtents));
-	engine.getEditorServer()->registerCreator(box_rigid_actor_type, *this);
-	engine.getEditorServer()->registerCreator(controller_type, *this);
-
-	m_impl = LUX_NEW(PhysicsSystemImpl);
-	m_impl->m_allocator = LUX_NEW(physx::PxDefaultAllocator)();
-	m_impl->m_error_callback = LUX_NEW(CustomErrorCallback)();
-	m_impl->m_foundation = PxCreateFoundation(
+	m_physx_allocator = LUMIX_NEW(m_allocator, AssertNullAllocator);
+	m_error_callback = LUMIX_NEW(m_allocator, CustomErrorCallback);
+	m_foundation = PxCreateFoundation(
 		PX_PHYSICS_VERSION,
-		*m_impl->m_allocator,
-		*m_impl->m_error_callback
+		*m_physx_allocator,
+		*m_error_callback
 	);
 
-	m_impl->m_physics = PxCreatePhysics(
+	m_physics = PxCreatePhysics(
 		PX_PHYSICS_VERSION,
-		*m_impl->m_foundation,
+		*m_foundation,
 		physx::PxTolerancesScale()
 	);
 	
-	m_impl->m_controller_manager = PxCreateControllerManager(*m_impl->m_foundation);
-	m_impl->m_cooking = PxCreateCooking(PX_PHYSICS_VERSION, *m_impl->m_foundation, physx::PxCookingParams());
-	m_impl->connect2VisualDebugger();
+	physx::PxTolerancesScale scale;
+	m_cooking = PxCreateCooking(PX_PHYSICS_VERSION, *m_foundation, physx::PxCookingParams(scale));
+	connect2VisualDebugger();
 	return true;
 }
 
 
-void PhysicsSystem::destroy()
+void PhysicsSystemImpl::destroy()
 {
-	m_impl->m_controller_manager->release();
-	m_impl->m_cooking->release();
-	m_impl->m_physics->release();
-	m_impl->m_foundation->release();
-	LUX_DELETE(m_impl->m_allocator);
-	LUX_DELETE(m_impl->m_error_callback);
-	LUX_DELETE(m_impl);
-	m_impl = 0;
+	m_cooking->release();
+	m_physics->release();
+	m_foundation->release();
+	LUMIX_DELETE(m_allocator, m_physx_allocator);
+	LUMIX_DELETE(m_allocator, m_error_callback);
 }
 
 
 bool PhysicsSystemImpl::connect2VisualDebugger()
 {
-	if(m_physics->getPvdConnectionManager() == NULL)
+	if(m_physics->getPvdConnectionManager() == nullptr)
 		return false;
 
 	const char* pvd_host_ip = "127.0.0.1";
@@ -142,18 +197,28 @@ bool PhysicsSystemImpl::connect2VisualDebugger()
 	unsigned int timeout = 100; 
 	physx::PxVisualDebuggerConnectionFlags connectionFlags = physx::PxVisualDebuggerExt::getAllConnectionFlags();
 
-	PVD::PvdConnection* theConnection = physx::PxVisualDebuggerExt::createConnection(m_physics->getPvdConnectionManager(), pvd_host_ip, port, timeout, connectionFlags);
-	return theConnection != NULL;
+	auto* theConnection = physx::PxVisualDebuggerExt::createConnection(m_physics->getPvdConnectionManager(), pvd_host_ip, port, timeout, connectionFlags);
+	return theConnection != nullptr;
 }
 
 
-void CustomErrorCallback::reportError(physx::PxErrorCode::Enum code, const char* message, const char* file, int line)
+void CustomErrorCallback::reportError(physx::PxErrorCode::Enum,
+	const char* message,
+	const char*,
+	int)
 {
-	g_log_error.log("PhysX", message);
+	g_log_error.log("PhysX") << message;
 }
 
 
-} // !namespace Lux
+extern "C" LUMIX_PHYSICS_API void setWorldEditor(Lumix::WorldEditor& editor)
+{
+	auto* plugin = LUMIX_NEW(editor.getAllocator(), EditorPlugin)(editor);
+	editor.addPlugin(*plugin);
+}
+
+
+} // !namespace Lumix
 
 
 

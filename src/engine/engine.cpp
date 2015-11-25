@@ -1,334 +1,444 @@
-#include "engine/engine.h"
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
-#include "animation/animation_system.h"
+#include "lumix.h"
+#include "engine.h"
+#include "core/blob.h"
 #include "core/crc32.h"
-#include "core/fs/disk_file_device.h"
-#include "core/fs/file_system.h"
 #include "core/input_system.h"
 #include "core/log.h"
-#include "core/event_manager.h"
-#include "core/fs/memory_file_device.h"
+#include "core/path.h"
+#include "core/profiler.h"
 #include "core/resource_manager.h"
 #include "core/timer.h"
-#include "engine/plugin_manager.h"
-#include "graphics/renderer.h"
-#include "script/script_system.h"
+#include "core/fs/disk_file_device.h"
+#include "core/fs/file_system.h"
+#include "core/fs/memory_file_device.h"
+#include "core/mtjd/manager.h"
+#include "debug/debug.h"
+#include "engine/iplugin.h"
+#include "plugin_manager.h"
+#include "universe/hierarchy.h"
+#include "universe/universe.h"
 
-#include "graphics/material_manager.h"
-#include "graphics/model_manager.h"
-#include "graphics/shader_manager.h"
-#include "graphics/texture_manager.h"
-#include "graphics/pipeline.h"
-#include "animation/animation.h"
+#include <cstdio>
 
-namespace Lux
+namespace Lumix
 {
 
-	const Event::Type Engine::UniverseCreatedEvent::s_type = crc32("engine_universe_created_event");
-	const Event::Type Engine::UniverseDestroyedEvent::s_type = crc32("engine_universe_destroyed_event");
+static const uint32 SERIALIZED_ENGINE_MAGIC = 0x5f4c454e; // == '_LEN'
 
-	struct EngineImpl
+
+enum class SerializedEngineVersion : int32
+{
+	BASE,
+	SPARSE_TRANFORMATIONS,
+	FOG_PARAMS,
+	SCENE_VERSION,
+
+	LATEST // must be the last one
+};
+
+
+#pragma pack(1)
+class SerializedEngineHeader
+{
+public:
+	uint32 m_magic;
+	SerializedEngineVersion m_version;
+	uint32 m_reserved; // for crc
+};
+#pragma pack()
+
+
+IScene* UniverseContext::getScene(uint32 hash) const
+{
+	for (auto* scene : m_scenes)
 	{
-		EngineImpl(Engine& engine) : m_owner(engine), m_script_system(ScriptSystem::create()) {}
-		~EngineImpl();
-		bool create(const char* base_path, Engine& owner);
-
-		Renderer* m_renderer;
-		FS::FileSystem* m_file_system; 
-		FS::MemoryFileDevice* m_mem_file_device;
-		FS::DiskFileDevice* m_disk_file_device;
-
-		ResourceManager m_resource_manager;
-		MaterialManager m_material_manager;
-		ModelManager	m_model_manager;
-		ShaderManager	m_shader_manager;
-		TextureManager	m_texture_manager;
-		PipelineManager m_pipeline_manager;
-		AnimationManager m_animation_manager;
-		EventManager m_event_manager;
-
-		string m_base_path;
-		EditorServer* m_editor_server;
-		PluginManager m_plugin_manager;
-		Universe* m_universe;
-		RenderScene* m_render_scene;
-		ScriptSystem* m_script_system;
-		InputSystem m_input_system;
-		Engine& m_owner;
-		Timer* m_timer;
-		Timer* m_fps_timer;
-		int	m_fps_frame;
-		float m_fps;
-
-		private:
-			void operator=(const EngineImpl&);
-	};
-
-
-	void showLogInVS(const char*, const char* message)
-	{
-		OutputDebugString(message);
-		OutputDebugString("\n");
+		if (crc32(scene->getPlugin().getName()) == hash)
+		{
+			return scene;
+		}
 	}
+	return nullptr;
+}
 
 
-	EngineImpl::~EngineImpl()
+class EngineImpl : public Engine
+{
+public:
+	EngineImpl(FS::FileSystem* fs, IAllocator& allocator)
+		: m_allocator(allocator)
+		, m_resource_manager(m_allocator)
+		, m_mtjd_manager(nullptr)
+		, m_fps(0)
+		, m_is_game_running(false)
+		, m_component_types(m_allocator)
+		, m_last_time_delta(0)
 	{
-		ScriptSystem::destroy(m_script_system);
-		m_resource_manager.get(ResourceManager::TEXTURE)->releaseAll();
-		m_resource_manager.get(ResourceManager::MATERIAL)->releaseAll();
-		m_resource_manager.get(ResourceManager::SHADER)->releaseAll();
-		m_resource_manager.get(ResourceManager::ANIMATION)->releaseAll();
-		m_resource_manager.get(ResourceManager::MODEL)->releaseAll();
-		m_resource_manager.get(ResourceManager::PIPELINE)->releaseAll();
-	}
-
-
-	bool EngineImpl::create(const char* base_path, Engine& owner)
-	{
-		m_timer = Timer::create();
-		m_fps_timer = Timer::create();
-		m_fps_frame = 0;
-		m_universe = 0;
-		m_base_path = base_path;
-
-		m_renderer = Renderer::createInstance();
-		if(!m_renderer)
+		m_mtjd_manager = MTJD::Manager::create(m_allocator);
+		if (!fs)
 		{
-			return false;
-		}
-		if(!m_renderer->create(owner))
-		{
-			Renderer::destroyInstance(*m_renderer);
-			return false;
-		}
-		if(!m_plugin_manager.create(owner))
-		{
-			return false;
-		}
-		AnimationSystem* anim_system = LUX_NEW(AnimationSystem)();
-		if(!anim_system->create(owner))
-		{
-			LUX_DELETE(anim_system);
-			return false;
-		}
-		m_plugin_manager.addPlugin(anim_system);
-		if(!m_input_system.create())
-		{
-			return false;
-		}
-		m_script_system->setEngine(m_owner);
-		return true;
-	}
+			m_file_system = FS::FileSystem::create(m_allocator);
 
+			m_mem_file_device = LUMIX_NEW(m_allocator, FS::MemoryFileDevice)(m_allocator);
+			m_disk_file_device = LUMIX_NEW(m_allocator, FS::DiskFileDevice)(m_allocator);
 
-	EventManager& Engine::getEventManager() const
-	{
-		return m_impl->m_event_manager;
-	}
-
-
-	bool Engine::create(const char* base_path, FS::FileSystem* file_system, EditorServer* editor_server)
-	{
-		g_log_info.getCallback().bind<showLogInVS>();
-		g_log_warning.getCallback().bind<showLogInVS>();
-		g_log_error.getCallback().bind<showLogInVS>();
-
-		m_impl = LUX_NEW(EngineImpl)(*this);
-		m_impl->m_editor_server = editor_server;
-
-		if(NULL == file_system)
-		{
-			m_impl->m_file_system = FS::FileSystem::create();
-
-			m_impl->m_mem_file_device = LUX_NEW(FS::MemoryFileDevice);
-			m_impl->m_disk_file_device = LUX_NEW(FS::DiskFileDevice);
-
-			m_impl->m_file_system->mount(m_impl->m_mem_file_device);
-			m_impl->m_file_system->mount(m_impl->m_disk_file_device);
-			m_impl->m_file_system->setDefaultDevice("memory:disk");
-			m_impl->m_file_system->setSaveGameDevice("memory:disk");
+			m_file_system->mount(m_mem_file_device);
+			m_file_system->mount(m_disk_file_device);
+			m_file_system->setDefaultDevice("memory:disk");
+			m_file_system->setSaveGameDevice("memory:disk");
 		}
 		else
 		{
-			m_impl->m_file_system = file_system;
-			m_impl->m_mem_file_device = NULL;
-			m_impl->m_disk_file_device = NULL;
+			m_file_system = fs;
+			m_mem_file_device = nullptr;
+			m_disk_file_device = nullptr;
 		}
 
-		if(!m_impl->create(base_path, *this))
+		m_resource_manager.create(*m_file_system);
+
+		m_timer = Timer::create(m_allocator);
+		m_fps_timer = Timer::create(m_allocator);
+		m_fps_frame = 0;
+	}
+
+	bool create()
+	{
+		m_plugin_manager = PluginManager::create(*this);
+		if (!m_plugin_manager)
 		{
-			LUX_DELETE(m_impl);
-			m_impl = NULL;
 			return false;
 		}
-
-		m_impl->m_resource_manager.create(*m_impl->m_file_system);
-		m_impl->m_material_manager.create(ResourceManager::MATERIAL, m_impl->m_resource_manager);
-		m_impl->m_model_manager.create(ResourceManager::MODEL, m_impl->m_resource_manager);
-		m_impl->m_shader_manager.create(ResourceManager::SHADER, m_impl->m_resource_manager);
-		m_impl->m_texture_manager.create(ResourceManager::TEXTURE, m_impl->m_resource_manager);
-		m_impl->m_pipeline_manager.create(ResourceManager::PIPELINE, m_impl->m_resource_manager);
-		m_impl->m_animation_manager.create(ResourceManager::ANIMATION, m_impl->m_resource_manager);
+		m_input_system = InputSystem::create(m_allocator);
+		if (!m_input_system)
+		{
+			return false;
+		}
 
 		return true;
 	}
 
 
-	void Engine::destroy()
+	~EngineImpl()
 	{
-		m_impl->m_plugin_manager.destroy();
-		Renderer::destroyInstance(*m_impl->m_renderer);
-
-		m_impl->m_material_manager.destroy();
-		
-		if(m_impl->m_disk_file_device)
+		Timer::destroy(m_timer);
+		Timer::destroy(m_fps_timer);
+		PluginManager::destroy(m_plugin_manager);
+		InputSystem::destroy(*m_input_system);
+		if (m_disk_file_device)
 		{
-			FS::FileSystem::destroy(m_impl->m_file_system);
-			LUX_DELETE(m_impl->m_mem_file_device);
-			LUX_DELETE(m_impl->m_disk_file_device);
+			FS::FileSystem::destroy(m_file_system);
+			LUMIX_DELETE(m_allocator, m_mem_file_device);
+			LUMIX_DELETE(m_allocator, m_disk_file_device);
 		}
 
-		LUX_DELETE(m_impl);
-		m_impl = 0;
+		m_resource_manager.destroy();
+		MTJD::Manager::destroy(*m_mtjd_manager);
 	}
 
-	Universe* Engine::createUniverse()
+
+	void setPlatformData(const PlatformData& data) override
 	{
-		m_impl->m_universe = LUX_NEW(Universe)();
-		m_impl->m_render_scene = RenderScene::createInstance(*this, *m_impl->m_universe);
-		m_impl->m_plugin_manager.onCreateUniverse(*m_impl->m_universe);
-		m_impl->m_script_system->setUniverse(m_impl->m_universe);
-		m_impl->m_universe->create();
-		
-		UniverseCreatedEvent evt(*m_impl->m_universe);
-		m_impl->m_event_manager.emitEvent(evt);
-		return m_impl->m_universe;
+		m_platform_data = data;
 	}
 
-	void Engine::destroyUniverse()
+
+	const PlatformData& getPlatformData() override
 	{
-		ASSERT(m_impl->m_universe);
-		if (m_impl->m_universe)
+		return m_platform_data;
+	}
+
+
+
+	IAllocator& getAllocator() override { return m_allocator; }
+
+
+	UniverseContext& createUniverse() override
+	{
+		UniverseContext* context = LUMIX_NEW(m_allocator, UniverseContext)(m_allocator);
+		context->m_universe = LUMIX_NEW(m_allocator, Universe)(m_allocator);
+		context->m_hierarchy =
+			Hierarchy::create(*context->m_universe, m_allocator);
+		const Array<IPlugin*>& plugins = m_plugin_manager->getPlugins();
+		for (auto* plugin : plugins)
 		{
-			UniverseDestroyedEvent evt(*m_impl->m_universe);
-			m_impl->m_event_manager.emitEvent(evt);
-			m_impl->m_script_system->setUniverse(NULL);
-			m_impl->m_plugin_manager.onDestroyUniverse(*m_impl->m_universe);
-			m_impl->m_universe->destroy();
-			RenderScene::destroyInstance(m_impl->m_render_scene);
-			m_impl->m_render_scene = NULL;
-			LUX_DELETE(m_impl->m_universe);
-			m_impl->m_universe = 0;
+			IScene* scene = plugin->createScene(*context);
+			if (scene)
+			{
+				context->m_scenes.push(scene);
+			}
+		}
+
+		return *context;
+	}
+
+
+	MTJD::Manager& getMTJDManager() override { return *m_mtjd_manager; }
+
+
+	void destroyUniverse(UniverseContext& context) override
+	{
+		for (int i = context.m_scenes.size() - 1; i >= 0; --i)
+		{
+			context.m_scenes[i]->getPlugin().destroyScene(context.m_scenes[i]);
+		}
+		Hierarchy::destroy(context.m_hierarchy);
+		LUMIX_DELETE(m_allocator, context.m_universe);
+
+		LUMIX_DELETE(m_allocator, &context);
+	}
+
+
+	PluginManager& getPluginManager() override
+	{
+		return *m_plugin_manager;
+	}
+
+
+	FS::FileSystem& getFileSystem() override { return *m_file_system; }
+
+
+	void startGame(UniverseContext& context) override
+	{
+		ASSERT(!m_is_game_running);
+		m_is_game_running = true;
+		for (auto* scene : context.m_scenes)
+		{
+			scene->startGame();
 		}
 	}
 
-	EditorServer* Engine::getEditorServer() const
+
+	void stopGame(UniverseContext& context) override
 	{
-		return m_impl->m_editor_server;
-	}
-
-
-	PluginManager& Engine::getPluginManager()
-	{
-		return m_impl->m_plugin_manager;
-	}
-
-
-	FS::FileSystem& Engine::getFileSystem()
-	{
-		return *m_impl->m_file_system;
-	}
-
-
-	Renderer& Engine::getRenderer()
-	{
-		return *m_impl->m_renderer;
-	}
-
-
-	void Engine::update()
-	{
-		++m_impl->m_fps_frame;
-		if(m_impl->m_fps_frame == 30)
+		ASSERT(m_is_game_running);
+		m_is_game_running = false;
+		for (auto* scene : context.m_scenes)
 		{
-			m_impl->m_fps = 30.0f / m_impl->m_fps_timer->tick();
-			m_impl->m_fps_frame = 0;
+			scene->stopGame();
 		}
-		float dt = m_impl->m_timer->tick();
-		m_impl->m_script_system->update(dt);
-		m_impl->m_plugin_manager.update(dt);
-		m_impl->m_input_system.update(dt);
 	}
 
 
-	IPlugin* Engine::loadPlugin(const char* name)
+	void update(UniverseContext& context) override
 	{
-		return m_impl->m_plugin_manager.load(name);
+		PROFILE_FUNCTION();
+		float dt;
+		++m_fps_frame;
+		if (m_fps_timer->getTimeSinceTick() > 0.5f)
+		{
+			m_fps = m_fps_frame / m_fps_timer->tick();
+			m_fps_frame = 0;
+		}
+		dt = m_timer->tick();
+		m_last_time_delta = dt;
+		for (int i = 0; i < context.m_scenes.size(); ++i)
+		{
+			context.m_scenes[i]->update(dt);
+		}
+		m_plugin_manager->update(dt);
+		m_input_system->update(dt);
+		getFileSystem().updateAsyncTransactions();
 	}
 
+
+	InputSystem& getInputSystem() override { return *m_input_system; }
+
+
+	ResourceManager& getResourceManager() override
+	{
+		return m_resource_manager;
+	}
+
+
+	float getFPS() const override { return m_fps; }
+
+
+	void serializePluginList(OutputBlob& serializer)
+	{
+		serializer.write((int32)m_plugin_manager->getPlugins().size());
+		for (auto* plugin : m_plugin_manager->getPlugins())
+		{
+			serializer.writeString(plugin->getName());
+		}
+	}
+
+
+	bool hasSerializedPlugins(InputBlob& serializer)
+	{
+		int32 count;
+		serializer.read(count);
+		for (int i = 0; i < count; ++i)
+		{
+			char tmp[32];
+			serializer.readString(tmp, sizeof(tmp));
+			if (!m_plugin_manager->getPlugin(tmp))
+			{
+				g_log_error.log("engine") << "Missing plugin " << tmp;
+				return false;
+			}
+		}
+		return true;
+	}
+
+
+	uint32 serialize(UniverseContext& ctx, OutputBlob& serializer) override
+	{
+		SerializedEngineHeader header;
+		header.m_magic = SERIALIZED_ENGINE_MAGIC; // == '_LEN'
+		header.m_version = SerializedEngineVersion::LATEST;
+		header.m_reserved = 0;
+		serializer.write(header);
+		serializePluginList(serializer);
+		g_path_manager.serialize(serializer);
+		int pos = serializer.getSize();
+		ctx.m_universe->serialize(serializer);
+		ctx.m_hierarchy->serialize(serializer);
+		m_plugin_manager->serialize(serializer);
+		serializer.write((int32)ctx.m_scenes.size());
+		for (int i = 0; i < ctx.m_scenes.size(); ++i)
+		{
+			serializer.writeString(ctx.m_scenes[i]->getPlugin().getName());
+			serializer.write(ctx.m_scenes[i]->getVersion());
+			ctx.m_scenes[i]->serialize(serializer);
+		}
+		uint32 crc = crc32((const uint8*)serializer.getData() + pos,
+							 serializer.getSize() - pos);
+		return crc;
+	}
+
+
+	bool deserialize(UniverseContext& ctx,
+							 InputBlob& serializer) override
+	{
+		SerializedEngineHeader header;
+		serializer.read(header);
+		if (header.m_magic != SERIALIZED_ENGINE_MAGIC)
+		{
+			g_log_error.log("engine") << "Wrong or corrupted file";
+			return false;
+		}
+		if (header.m_version > SerializedEngineVersion::LATEST)
+		{
+			g_log_error.log("engine") << "Unsupported version";
+			return false;
+		}
+		if (!hasSerializedPlugins(serializer))
+		{
+			return false;
+		}
+		g_path_manager.deserialize(serializer);
+		ctx.m_universe->deserialize(serializer);
+		ctx.m_hierarchy->deserialize(serializer);
+		m_plugin_manager->deserialize(serializer);
+		int32 scene_count;
+		serializer.read(scene_count);
+		for (int i = 0; i < scene_count; ++i)
+		{
+			char tmp[32];
+			serializer.readString(tmp, sizeof(tmp));
+			IScene* scene = ctx.getScene(crc32(tmp));
+			int scene_version = -1;
+			if (header.m_version > SerializedEngineVersion::SCENE_VERSION)
+			{
+				serializer.read(scene_version);
+			}
+			scene->deserialize(serializer, scene_version);
+		}
+		g_path_manager.clear();
+		return true;
+	}
+
+
+	float getLastTimeDelta() override { return m_last_time_delta; }
+
+private:
+	struct ComponentType
+	{
+		ComponentType(IAllocator& allocator)
+			: m_name(allocator)
+			, m_id(allocator)
+		{
+		}
+
+		string m_name;
+		string m_id;
+
+		uint32 m_id_hash;
+		uint32 m_dependency;
+	};
+
+private:
+	Debug::Allocator m_allocator;
+
+	FS::FileSystem* m_file_system;
+	FS::MemoryFileDevice* m_mem_file_device;
+	FS::DiskFileDevice* m_disk_file_device;
+
+	ResourceManager m_resource_manager;
 	
+	MTJD::Manager* m_mtjd_manager;
 
-	ScriptSystem& Engine::getScriptSystem()
+	Array<ComponentType> m_component_types;
+	PluginManager* m_plugin_manager;
+	InputSystem* m_input_system;
+	Timer* m_timer;
+	Timer* m_fps_timer;
+	int m_fps_frame;
+	float m_fps;
+	float m_last_time_delta;
+	bool m_is_game_running;
+	PlatformData m_platform_data;
+
+private:
+	void operator=(const EngineImpl&);
+	EngineImpl(const EngineImpl&);
+};
+
+
+static void showLogInVS(const char*, const char* message)
+{
+	Debug::debugOutput(message);
+	Debug::debugOutput("\n");
+}
+
+
+static FILE* g_error_file = nullptr;
+
+
+static void logErrorToFile(const char*, const char* message)
+{
+	fputs(message, g_error_file);
+	fflush(g_error_file);
+}
+
+
+Engine* Engine::create(FS::FileSystem* fs, IAllocator& allocator)
+{
+	installUnhandledExceptionHandler();
+
+	g_error_file = fopen("error.log", "wb");
+
+	g_log_error.getCallback().bind<logErrorToFile>();
+	g_log_info.getCallback().bind<showLogInVS>();
+	g_log_warning.getCallback().bind<showLogInVS>();
+	g_log_error.getCallback().bind<showLogInVS>();
+
+	EngineImpl* engine = LUMIX_NEW(allocator, EngineImpl)(fs, allocator);
+	if (!engine->create())
 	{
-		return *m_impl->m_script_system;
+		LUMIX_DELETE(allocator, engine);
+		return nullptr;
 	}
+	return engine;
+}
 
 
-	InputSystem& Engine::getInputSystem()
-	{
-		return m_impl->m_input_system;
-	}
+void Engine::destroy(Engine* engine, IAllocator& allocator)
+{
+	LUMIX_DELETE(allocator, engine);
+
+	fclose(g_error_file);
+	g_error_file = nullptr;
+}
 
 
-	const char* Engine::getBasePath() const
-	{
-		return m_impl->m_base_path.c_str();
-	}
-
-
-	Universe* Engine::getUniverse() const
-	{
-		return m_impl->m_universe;
-	}
-
-	RenderScene* Engine::getRenderScene() const
-	{
-		return m_impl->m_render_scene;
-	}
-
-
-	ResourceManager& Engine::getResourceManager() const
-	{
-		return m_impl->m_resource_manager;
-	}
-
-	float Engine::getFPS() const
-	{
-		return m_impl->m_fps;
-	}
-
-
-	void Engine::serialize(ISerializer& serializer)
-	{
-		m_impl->m_universe->serialize(serializer);
-		m_impl->m_renderer->serialize(serializer);
-		m_impl->m_render_scene->serialize(serializer);
-		m_impl->m_script_system->serialize(serializer);
-		m_impl->m_plugin_manager.serialize(serializer);
-	}
-
-
-	void Engine::deserialize(ISerializer& serializer)
-	{
-		m_impl->m_universe->deserialize(serializer);
-		m_impl->m_renderer->deserialize(serializer);
-		m_impl->m_render_scene->deserialize(serializer);
-		m_impl->m_script_system->deserialize(serializer);
-		m_impl->m_plugin_manager.deserialize(serializer);
-	}
-
-
-} // ~namespace Lux
+} // ~namespace Lumix

@@ -1,14 +1,19 @@
 #pragma once
 
 
-#include "core/lux.h"
-#include "core/string.h"
-#include "core/vec3.h"
-#include "universe/universe.h"
+#include "lumix.h"
+#include "core/iallocator.h"
+#include "core/vec.h"
+#include "iplugin.h"
 
 
-namespace Lux
+namespace Lumix
 {
+
+
+class Engine;
+class RenderScene;
+class Universe;
 
 
 struct RaycastHit
@@ -19,35 +24,37 @@ struct RaycastHit
 };
 
 
-class LUX_PHYSICS_API PhysicsScene
+class LUMIX_PHYSICS_API PhysicsScene : public IScene
 {
 	friend class PhysicsSystem;
 	public:
-		PhysicsScene();
+		static PhysicsScene* create(PhysicsSystem& system, Universe& universe, Engine& engine, IAllocator& allocator);
+		static void destroy(PhysicsScene* scene);
 		
-		bool create(PhysicsSystem& system, Universe& universe);
-		void destroy();
-		void update(float time_delta);
-		void render();
-		bool raycast(const Vec3& origin, const Vec3& dir, float distance, RaycastHit& result);
-		Component createBoxRigidActor(Entity entity);
-		Component createController(Entity entity);
-		void destroyActor(Component cmp);
-		PhysicsSystem& getSystem() const;
+		virtual ~PhysicsScene() {}
+		virtual void update(float time_delta) = 0;
+		virtual void render(RenderScene& render_scene) = 0;
+		virtual bool raycast(const Vec3& origin, const Vec3& dir, float distance, RaycastHit& result) = 0;
+		virtual PhysicsSystem& getSystem() const = 0;
 		
-		void getIsDynamic(Component cmp, bool& is);
-		void setIsDynamic(Component cmp, const bool& is);
-		void getHalfExtents(Component cmp, Vec3& size);
-		void setHalfExtents(Component cmp, const Vec3& size);
+		virtual bool isDynamic(ComponentIndex cmp) = 0;
+		virtual void setIsDynamic(ComponentIndex cmp, bool) = 0;
+		virtual Vec3 getHalfExtents(ComponentIndex cmp) = 0;
+		virtual void setHalfExtents(ComponentIndex cmp, const Vec3& size) = 0;
+		virtual const char* getShapeSource(ComponentIndex cmp) = 0;
+		virtual void setShapeSource(ComponentIndex cmp, const char* str) = 0;
+		virtual const char* getHeightmap(ComponentIndex cmp) = 0;
+		virtual void setHeightmap(ComponentIndex cmp, const char* str) = 0;
+		virtual float getHeightmapXZScale(ComponentIndex cmp) = 0;
+		virtual void setHeightmapXZScale(ComponentIndex cmp, float scale) = 0;
+		virtual float getHeightmapYScale(ComponentIndex cmp) = 0;
+		virtual void setHeightmapYScale(ComponentIndex cmp, float scale) = 0;
 
-		void moveController(Component cmp, const Vec3& v, float dt);
-	
-		void serialize(ISerializer& serializer);
-		void deserialize(ISerializer& serializer);
-
-	private:
-		struct PhysicsSceneImpl* m_impl;
+		virtual void moveController(ComponentIndex cmp, const Vec3& v, float dt) = 0;
+		virtual ComponentIndex getController(Entity entity) = 0;
+		virtual float getControllerRadius(ComponentIndex cmp) = 0;
+		virtual float getControllerHeight(ComponentIndex cmp) = 0;
 };
 
 
-} // !namespace Lux
+} // !namespace Lumix

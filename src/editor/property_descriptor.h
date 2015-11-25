@@ -1,201 +1,903 @@
 #pragma once
 
-#include "universe\universe.h"
 #include "core/blob.h"
-#include "core/delegate.h"
+#include "core/stack_allocator.h"
 #include "core/string.h"
+#include "iproperty_descriptor.h"
+#include "universe\universe.h"
 
 
-namespace Lux
+namespace Lumix
 {
 
 
-struct Vec3;
-class Blob;
-
-
-class IPropertyDescriptor
+class LUMIX_EDITOR_API IIntPropertyDescriptor : public IPropertyDescriptor
 {
-	public:
-		enum Type
+public:
+	IIntPropertyDescriptor(IAllocator& allocator);
+
+	void setLimit(int min, int max)
+	{
+		m_min = min;
+		m_max = max;
+	}
+	int getMin() const { return m_min; }
+	int getMax() const { return m_max; }
+
+private:
+	int m_min;
+	int m_max;
+};
+
+
+template <class S> class IntArrayObjectDescriptor : public IIntPropertyDescriptor
+{
+public:
+	typedef int (S::*IntegerGetter)(ComponentIndex, int);
+	typedef void (S::*IntegerSetter)(ComponentIndex, int, int);
+
+public:
+	IntArrayObjectDescriptor(const char* name,
+		IntegerGetter _getter,
+		IntegerSetter _setter,
+		IAllocator& allocator)
+		: IIntPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_integer_getter = _getter;
+		m_integer_setter = _setter;
+		m_type = INTEGER;
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		int32 i;
+		stream.read(&i, sizeof(i));
+		(static_cast<S*>(cmp.scene)->*m_integer_setter)(cmp.index, index, i);
+	}
+
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		int32 i = (static_cast<S*>(cmp.scene)->*m_integer_getter)(cmp.index, index);
+		int len = sizeof(i);
+		stream.write(&i, len);
+	}
+
+
+	void set(ComponentUID, InputBlob&) const override {};
+	void get(ComponentUID, OutputBlob&) const override {};
+
+
+private:
+	IntegerGetter m_integer_getter;
+	IntegerSetter m_integer_setter;
+};
+
+
+template <class S> class DecimalArrayObjectDescriptor : public IPropertyDescriptor
+{
+public:
+	typedef float (S::*Getter)(ComponentIndex, int);
+	typedef void (S::*Setter)(ComponentIndex, int, float);
+
+public:
+	DecimalArrayObjectDescriptor(const char* name,
+		Getter _getter,
+		Setter _setter,
+		IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = _getter;
+		m_setter = _setter;
+		m_type = DECIMAL;
+	}
+
+
+	void set(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		float f;
+		stream.read(&f, sizeof(f));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp, index, f);
+	}
+
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		float f = (static_cast<S*>(cmp.scene)->*m_getter)(cmp, index);
+		stream.write(&f, sizeof(f));
+	}
+
+
+	void set(ComponentUID, OutputBlob&) const override { ASSERT(false); };
+	void get(ComponentUID, OutputBlob&) const override { ASSERT(false); };
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class StringArrayObjectDescriptor : public IPropertyDescriptor
+{
+private:
+	static const int MAX_STRING_SIZE = 300;
+
+public:
+	typedef const char* (S::*Getter)(ComponentIndex, int);
+	typedef void (S::*Setter)(ComponentIndex, int, const char*);
+
+public:
+	StringArrayObjectDescriptor(const char* name,
+		Getter _getter,
+		Setter _setter,
+		IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = _getter;
+		m_setter = _setter;
+		m_type = STRING;
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		char tmp[MAX_STRING_SIZE];
+		char* c = tmp;
+		do
 		{
-			FILE = 0,
-			DECIMAL,
-			BOOL,
-			VEC3,
-			INTEGER,
-			STRING
-		};
+			stream.read(c, 1);
+			++c;
+		} while (*(c - 1) && (c - 1) - tmp < MAX_STRING_SIZE);
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, index, tmp);
+	}
 
-	public:
-		virtual void set(Component cmp, Blob& stream) const = 0;
-		virtual void get(Component cmp, Blob& stream) const = 0;
 
-		uint32_t getNameHash() const { return m_name_hash; }
-		Type getType() const { return m_type; }
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		StackAllocator<MAX_STRING_SIZE> allocator;
+		string value(allocator);
+		value = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index, index);
+		int len = value.length() + 1;
+		stream.write(value.c_str(), len);
+	}
 
-	protected:
-		uint32_t m_name_hash;
-		Type m_type;
+
+	void set(ComponentUID, InputBlob&) const override { ASSERT(false); };
+	void get(ComponentUID, OutputBlob&) const override { ASSERT(false); };
+
+private:
+	Getter m_getter;
+	Setter m_setter;
 };
 
 
 template <class S>
-class PropertyDescriptor : public IPropertyDescriptor
+class FileArrayObjectDescriptor : public StringArrayObjectDescriptor<S>,
+								  public IFilePropertyDescriptor
 {
-	public:
-		typedef void (S::*Getter)(Component, string&);
-		typedef void (S::*Setter)(Component, const string&);
-		typedef void (S::*BoolGetter)(Component, bool&);
-		typedef void (S::*BoolSetter)(Component, const bool&);
-		typedef void (S::*DecimalGetter)(Component, float&);
-		typedef void (S::*DecimalSetter)(Component, const float&);
-		typedef void (S::*IntegerGetter)(Component, int&);
-		typedef void (S::*IntegerSetter)(Component, const int&);
-		typedef void (S::*Vec3Getter)(Component, Vec3&);
-		typedef void (S::*Vec3Setter)(Component, const Vec3&);
+public:
+	FileArrayObjectDescriptor(const char* name,
+		Getter getter,
+		Setter setter,
+		const char* file_type,
+		IAllocator& allocator)
+		: StringArrayObjectDescriptor(name, getter, setter, allocator)
+		, m_file_type(file_type, m_file_type_allocator)
+	{
+		m_type = IPropertyDescriptor::FILE;
+	}
 
-	public:
-		PropertyDescriptor(uint32_t _name_hash, Getter _getter, Setter _setter, Type _type) { m_name_hash = _name_hash; m_getter = _getter; m_setter = _setter; m_type = _type; }
-		PropertyDescriptor(uint32_t _name_hash, BoolGetter _getter, BoolSetter _setter) { m_name_hash = _name_hash; m_bool_getter = _getter; m_bool_setter = _setter; m_type = BOOL; }
-		PropertyDescriptor(uint32_t _name_hash, DecimalGetter _getter, DecimalSetter _setter) { m_name_hash = _name_hash; m_decimal_getter = _getter; m_decimal_setter = _setter; m_type = DECIMAL; }
-		PropertyDescriptor(uint32_t _name_hash, IntegerGetter _getter, IntegerSetter _setter) { m_name_hash = _name_hash; m_integer_getter = _getter; m_integer_setter = _setter; m_type = INTEGER; }
-		PropertyDescriptor(uint32_t _name_hash, Vec3Getter _getter, Vec3Setter _setter) { m_name_hash = _name_hash; m_vec3_getter = _getter; m_vec3_setter = _setter; m_type = VEC3; }
-		virtual void set(Component cmp, Blob& stream) const override;
-		virtual void get(Component cmp, Blob& stream) const override;
+	const char* getFileType() override { return m_file_type.c_str(); }
 
-	private:
-		union
-		{
-			Getter m_getter;
-			BoolGetter m_bool_getter;
-			DecimalGetter m_decimal_getter;
-			IntegerGetter m_integer_getter;
-			Vec3Getter m_vec3_getter;
-		};
-		union 
-		{
-			Setter m_setter;
-			BoolSetter m_bool_setter;
-			DecimalSetter m_decimal_setter;
-			IntegerSetter m_integer_setter;
-			Vec3Setter m_vec3_setter;
-		};
-
+private:
+	StackAllocator<MAX_PATH_LENGTH> m_file_type_allocator;
+	string m_file_type;
 };
 
 
-
 template <class S>
-void PropertyDescriptor<S>::set(Component cmp, Blob& stream) const
+class ResourceArrayObjectDescriptor : public FileArrayObjectDescriptor<S>,
+									  public ResourcePropertyDescriptorBase
 {
-	int len;
-	stream.read(&len, sizeof(len));
-	switch(m_type)
+public:
+	ResourceArrayObjectDescriptor(const char* name,
+		Getter getter,
+		Setter setter,
+		const char* file_type,
+		uint32 resource_type,
+		IAllocator& allocator)
+		: FileArrayObjectDescriptor(name, getter, setter, file_type, allocator)
+		, ResourcePropertyDescriptorBase(resource_type)
 	{
-		case DECIMAL:
-			{
-				float f;
-				stream.read(&f, sizeof(f));
-				(static_cast<S*>(cmp.system)->*m_decimal_setter)(cmp, f); 
-			}
-			break;
-		case INTEGER:
-			{
-				int32_t i;
-				stream.read(&i, sizeof(i));
-				(static_cast<S*>(cmp.system)->*m_integer_setter)(cmp, i);
-			}
-			break;
-		case BOOL:
-			{
-				bool b;
-				stream.read(&b, sizeof(b));
-				(static_cast<S*>(cmp.system)->*m_bool_setter)(cmp, b); 
-			}
-			break;
-		case STRING:
-		case FILE:
-			{
-				char tmp[301];
-				ASSERT(len < 300);
-				stream.read(tmp, len);
-				tmp[len] = '\0';
-				string s((char*)tmp);
-				(static_cast<S*>(cmp.system)->*m_setter)(cmp, s); 
-			}
-			break;
-		case VEC3:
-			{
-				Vec3 v;
-				stream.read(&v, sizeof(v));
-				(static_cast<S*>(cmp.system)->*m_vec3_setter)(cmp, v);
-			}
-			break;
-		default:
-			ASSERT(false);
-			break;
+		m_type = IPropertyDescriptor::RESOURCE;
 	}
-}
+};
 
 
-template <class S>
-void PropertyDescriptor<S>::get(Component cmp, Blob& stream) const
+template <class S> class Vec3ArrayObjectDescriptor : public IPropertyDescriptor
 {
-	int len = 4;
-	switch(m_type)
+public:
+	typedef Vec3 (S::*Getter)(ComponentIndex, int);
+	typedef void (S::*Setter)(ComponentIndex, int, const Vec3&);
+
+public:
+	Vec3ArrayObjectDescriptor(const char* name, Getter _getter, Setter _setter)
 	{
-		case STRING:
-		case FILE:
-			{
-				string value;
-				(static_cast<S*>(cmp.system)->*m_getter)(cmp, value);
-				len = value.length() + 1;
-				stream.write(&len, sizeof(len));
-				stream.write(value.c_str(), len);
-			}
-			break;
-		case DECIMAL:
-			{
-				float f;
-				(static_cast<S*>(cmp.system)->*m_decimal_getter)(cmp, f);
-				len = sizeof(f);
-				stream.write(&len, sizeof(len));
-				stream.write(&f, len);
-			}
-			break;
-		case INTEGER:
-			{
-				int32_t i;
-				(static_cast<S*>(cmp.system)->*m_integer_getter)(cmp, i);
-				len = sizeof(i);
-				stream.write(&len, sizeof(len));
-				stream.write(&i, len);
-			}
-			break;
-		case BOOL:
-			{
-				bool b;
-				(static_cast<S*>(cmp.system)->*m_bool_getter)(cmp, b);
-				len = sizeof(b);
-				stream.write(&len, sizeof(len));
-				stream.write(&b, len);
-			}
-			break;
-		case VEC3:
-			{
-				Vec3 v;
-				(static_cast<S*>(cmp.system)->*m_vec3_getter)(cmp, v);
-				len = sizeof(v);
-				stream.write(&len, sizeof(len));
-				stream.write(&v, len);
-			}
-			break;
-		default:
-			ASSERT(false);
-			break;
+		setName(name);
+		m_vec3_getter = _getter;
+		m_vec3_setter = _setter;
+		m_type = VEC3;
 	}
-}
 
 
-} // !namespace Lux
+	void set(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		Vec3 v;
+		stream.read(&v, sizeof(v));
+		(static_cast<S*>(cmp.scene)->*m_vec3_setter)(cmp, index, v);
+	}
+
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		Vec3 v = (static_cast<S*>(cmp.scene)->*m_vec3_getter)(cmp, index);
+		len = sizeof(v);
+		stream.write(&v, len);
+	}
+
+
+	void set(ComponentUID, OutputBlob&) const override{};
+	void get(ComponentUID, OutputBlob&) const override{};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class ArrayDescriptor : public IArrayDescriptor
+{
+public:
+	typedef int (S::*Counter)(ComponentIndex);
+	typedef void (S::*Adder)(ComponentIndex, int);
+	typedef void (S::*Remover)(ComponentIndex, int);
+
+public:
+	ArrayDescriptor(const char* name,
+		Counter counter,
+		Adder adder,
+		Remover remover,
+		IAllocator& allocator)
+		: IArrayDescriptor(allocator)
+		, m_allocator(allocator)
+	{
+		setName(name);
+		m_type = ARRAY;
+		m_counter = counter;
+		m_adder = adder;
+		m_remover = remover;
+	}
+	~ArrayDescriptor()
+	{
+		for (int i = 0; i < m_children.size(); ++i)
+		{
+			LUMIX_DELETE(m_allocator, m_children[i]);
+		}
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		int count;
+		stream.read(count);
+		while (getCount(cmp) < count)
+		{
+			addArrayItem(cmp, -1);
+		}
+		while (getCount(cmp) > count)
+		{
+			removeArrayItem(cmp, getCount(cmp) - 1);
+		}
+		for (int i = 0; i < count; ++i)
+		{
+			for (int j = 0, cj = getChildren().size(); j < cj; ++j)
+			{
+				getChildren()[j]->set(cmp, i, stream);
+			}
+		}
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		int count = getCount(cmp);
+		stream.write(count);
+		for (int i = 0; i < count; ++i)
+		{
+			for (int j = 0, cj = getChildren().size(); j < cj; ++j)
+			{
+				getChildren()[j]->get(cmp, i, stream);
+			}
+		}
+	}
+
+
+	void set(ComponentUID, int, InputBlob&) const override { ASSERT(false); };
+	void get(ComponentUID, int, OutputBlob&) const override { ASSERT(false); };
+
+
+	int getCount(ComponentUID cmp) const override
+	{
+		return (static_cast<S*>(cmp.scene)->*m_counter)(cmp.index);
+	}
+
+
+	void addArrayItem(ComponentUID cmp, int index) const override
+	{
+		(static_cast<S*>(cmp.scene)->*m_adder)(cmp.index, index);
+	}
+
+
+	void removeArrayItem(ComponentUID cmp, int index) const override
+	{
+		(static_cast<S*>(cmp.scene)->*m_remover)(cmp.index, index);
+	}
+
+private:
+	IAllocator& m_allocator;
+	Counter m_counter;
+	Adder m_adder;
+	Remover m_remover;
+};
+
+
+template <class S> class IntPropertyDescriptor : public IIntPropertyDescriptor
+{
+public:
+	typedef int (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, int);
+
+public:
+	IntPropertyDescriptor() {}
+
+	IntPropertyDescriptor(const char* name, Getter _getter, Setter _setter, IAllocator& allocator)
+		: IIntPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_integer_getter = _getter;
+		m_integer_setter = _setter;
+		m_type = INTEGER;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		int32 i;
+		stream.read(&i, sizeof(i));
+		(static_cast<S*>(cmp.scene)->*m_integer_setter)(cmp.index, i);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		int32 i = (static_cast<S*>(cmp.scene)->*m_integer_getter)(cmp.index);
+		stream.write(i);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_integer_getter;
+	Setter m_integer_setter;
+};
+
+
+template <class S> class StringPropertyDescriptor : public IPropertyDescriptor
+{
+private:
+	static const int MAX_STRING_SIZE = 300;
+
+public:
+	typedef const char* (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, const char*);
+
+public:
+	StringPropertyDescriptor(const char* name, Getter getter, Setter setter, IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = getter;
+		m_setter = setter;
+		m_type = IPropertyDescriptor::STRING;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		char tmp[MAX_STRING_SIZE];
+		char* c = tmp;
+		do
+		{
+			stream.read(c, 1);
+			++c;
+		} while (*(c - 1) && (c - 1) - tmp < MAX_STRING_SIZE);
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, tmp);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		StackAllocator<MAX_STRING_SIZE> allocator;
+		string value(allocator);
+		value = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = value.length() + 1;
+		stream.write(value.c_str(), len);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class BoolPropertyDescriptor : public IPropertyDescriptor
+{
+public:
+	typedef bool (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, bool);
+
+public:
+	BoolPropertyDescriptor(const char* name, Getter getter, Setter setter, IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = getter;
+		m_setter = setter;
+		m_type = IPropertyDescriptor::BOOL;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		bool b;
+		stream.read(&b, sizeof(b));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, b);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		bool b = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = sizeof(b);
+		stream.write(&b, len);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class Vec3PropertyDescriptor : public IPropertyDescriptor
+{
+public:
+	typedef Vec3 (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, const Vec3&);
+
+public:
+	Vec3PropertyDescriptor(const char* name, Getter getter, Setter setter, IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = getter;
+		m_setter = setter;
+		m_type = IPropertyDescriptor::VEC3;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		Vec3 v;
+		stream.read(&v, sizeof(v));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, v);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		Vec3 v = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = sizeof(v);
+		stream.write(&v, len);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class Vec4PropertyDescriptor : public IPropertyDescriptor
+{
+public:
+	typedef Vec4 (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, const Vec4&);
+
+public:
+	Vec4PropertyDescriptor(const char* name, Getter getter, Setter setter, IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = getter;
+		m_setter = setter;
+		m_type = IPropertyDescriptor::VEC4;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		Vec4 v;
+		stream.read(&v, sizeof(v));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, v);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		Vec4 v = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = sizeof(v);
+		stream.write(&v, len);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class Vec2PropertyDescriptor : public IPropertyDescriptor
+{
+public:
+	typedef Vec2 (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, const Vec2&);
+
+public:
+	Vec2PropertyDescriptor(const char* name, Getter getter, Setter setter, IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = getter;
+		m_setter = setter;
+		m_type = IPropertyDescriptor::VEC2;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		Vec2 v;
+		stream.read(&v, sizeof(v));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, v);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		Vec2 v = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = sizeof(v);
+		stream.write(&v, len);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+class IFilePropertyDescriptor
+{
+public:
+	virtual ~IFilePropertyDescriptor() {}
+
+	virtual const char* getFileType() = 0;
+};
+
+
+template <class T>
+class FilePropertyDescriptor : public StringPropertyDescriptor<T>, public IFilePropertyDescriptor
+{
+public:
+	FilePropertyDescriptor(const char* name,
+		Getter getter,
+		Setter setter,
+		const char* file_type,
+		IAllocator& allocator)
+		: StringPropertyDescriptor(name, getter, setter, allocator)
+		, m_file_type(file_type, m_file_type_allocator)
+	{
+		m_type = IPropertyDescriptor::FILE;
+	}
+
+	const char* getFileType() override { return m_file_type.c_str(); }
+
+private:
+	StackAllocator<MAX_PATH_LENGTH> m_file_type_allocator;
+	string m_file_type;
+};
+
+
+template <class T>
+class ResourcePropertyDescriptor : public FilePropertyDescriptor<T>,
+								   public ResourcePropertyDescriptorBase
+{
+public:
+	ResourcePropertyDescriptor(const char* name,
+		Getter getter,
+		Setter setter,
+		const char* file_type,
+		uint32 resource_type,
+		IAllocator& allocator)
+		: FilePropertyDescriptor(name, getter, setter, file_type, allocator)
+		, ResourcePropertyDescriptorBase(resource_type)
+	{
+		m_type = IPropertyDescriptor::RESOURCE;
+	}
+};
+
+
+template <class S, int COUNT> class SampledFunctionDescriptor : public ISampledFunctionDescriptor
+{
+public:
+	typedef float (S::*Getter)(ComponentIndex, int);
+	typedef void (S::*Setter)(ComponentIndex, int, float);
+
+public:
+	SampledFunctionDescriptor(const char* name,
+		Getter _getter,
+		Setter _setter,
+		float min,
+		float max,
+		IAllocator& allocator)
+		: ISampledFunctionDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = _getter;
+		m_setter = _setter;
+		m_min = min;
+		m_max = max;
+		m_type = SAMPLED_FUNCTION;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		for (int i = 0; i < COUNT; ++i)
+		{
+			float f;
+			stream.read(&f, sizeof(f));
+			(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, i, f);
+		}
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		for (int i = 0; i < COUNT; ++i)
+		{
+			float f = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index, i);
+			int len = sizeof(f);
+			stream.write(&f, len);
+		}
+	}
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+
+	float getMin() override { return m_min; }
+	float getMax() override { return m_max; }
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+	float m_min;
+	float m_max;
+};
+
+
+template <class S> class DecimalPropertyDescriptor : public IDecimalPropertyDescriptor
+{
+public:
+	typedef float (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, float);
+
+public:
+	DecimalPropertyDescriptor(const char* name,
+		Getter _getter,
+		Setter _setter,
+		float min,
+		float max,
+		float step,
+		IAllocator& allocator)
+		: IDecimalPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = _getter;
+		m_setter = _setter;
+		m_min = min;
+		m_max = max;
+		m_step = step;
+		m_type = DECIMAL;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		float f;
+		stream.read(&f, sizeof(f));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, f);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		float f = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = sizeof(f);
+		stream.write(&f, len);
+	}
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+template <class S> class ColorPropertyDescriptor : public IPropertyDescriptor
+{
+public:
+	typedef Vec3 (S::*Getter)(ComponentIndex);
+	typedef void (S::*Setter)(ComponentIndex, const Vec3&);
+
+public:
+	ColorPropertyDescriptor(const char* name, Getter _getter, Setter _setter, IAllocator& allocator)
+		: IPropertyDescriptor(allocator)
+	{
+		setName(name);
+		m_getter = _getter;
+		m_setter = _setter;
+		m_type = COLOR;
+	}
+
+
+	void set(ComponentUID cmp, InputBlob& stream) const override
+	{
+		Vec3 f;
+		stream.read(&f, sizeof(f));
+		(static_cast<S*>(cmp.scene)->*m_setter)(cmp.index, f);
+	}
+
+
+	void get(ComponentUID cmp, OutputBlob& stream) const override
+	{
+		Vec3 f = (static_cast<S*>(cmp.scene)->*m_getter)(cmp.index);
+		int len = sizeof(f);
+		stream.write(&f, len);
+	}
+
+
+	void set(ComponentUID cmp, int index, InputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		set(cmp, stream);
+	};
+	void get(ComponentUID cmp, int index, OutputBlob& stream) const override
+	{
+		ASSERT(index == -1);
+		get(cmp, stream);
+	};
+
+private:
+	Getter m_getter;
+	Setter m_setter;
+};
+
+
+} // !namespace Lumix

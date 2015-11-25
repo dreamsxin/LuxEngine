@@ -1,20 +1,26 @@
-#include "unit_tests/suite/lux_unit_tests.h"
-
-#include <Windows.h>
-#include <stdio.h>
+#include "unit_tests/suite/lumix_unit_tests.h"
 
 #include "core/log.h"
+#include "core/stack_allocator.h"
+#include <cstdio>
+#include "core/pc/simple_win.h"
+#include <Windows.h>
 
-namespace Lux
+
+namespace Lumix
 {
 	namespace UnitTest
 	{
 		void outputToVS(const char* system, const char* message)
 		{
-			char tmp[2048];
-			sprintf(tmp, "%s: %s\r", system, message);
+			StackAllocator<2048> allocator;
+			string tmp(allocator);
+			tmp = system;
+			tmp += ": ";
+			tmp += message;
+			tmp += "\r";
 
-			OutputDebugString(tmp);
+			OutputDebugString(tmp.c_str());
 		}
 
 		void outputToConsole(const char* system, const char* message)
@@ -36,7 +42,7 @@ namespace Lux
 		void App::run(int argc, const char *argv[])
 		{
 			Manager::instance().dumpTests();
-			Manager::instance().runTests("");
+			Manager::instance().runTests("*");
 			Manager::instance().dumpResults();
 		}
 

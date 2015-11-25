@@ -1,132 +1,163 @@
-#include "engine/plugin_manager.h"
-#include "engine/iplugin.h"
-#include "core/log.h"
+#include "plugin_manager.h"
 #include "core/array.h"
-#include <Windows.h>
+#include "core/log.h"
+#include "core/system.h"
+#include "engine.h"
+#include "iplugin.h"
 
 
-namespace Lux 
+namespace Lumix 
 {
-	struct PluginManagerImpl
-	{
+
+
+class PluginManagerImpl : public PluginManager
+{
+	private:
 		typedef Array<IPlugin*> PluginList;
-
-		Engine* m_engine;
-		PluginList m_plugins;
-	};
+		typedef Array<void*> LibraryList;
 
 
-	void PluginManager::update(float dt)
-	{
-		PluginManagerImpl::PluginList& plugins = m_impl->m_plugins;
-		for(int i = 0, c = plugins.size(); i < c; ++i)
+	public:
+		PluginManagerImpl(Engine& engine, IAllocator& allocator)
+			: m_plugins(allocator)
+			, m_libraries(allocator)
+			, m_allocator(allocator)
+			, m_engine(engine)
+			, m_library_loaded(allocator)
+		{ }
+
+
+		~PluginManagerImpl()
 		{
-			plugins[i]->update(dt);
-		}
-	}
-
-
-	void PluginManager::serialize(ISerializer& serializer)
-	{
-		PluginManagerImpl::PluginList& plugins = m_impl->m_plugins;
-		for(int i = 0, c = plugins.size(); i < c; ++i)
-		{
-			plugins[i]->serialize(serializer);
-		}
-	}
-
-
-	void PluginManager::deserialize(ISerializer& serializer)
-	{
-		PluginManagerImpl::PluginList& plugins = m_impl->m_plugins;
-		for(int i = 0, c = plugins.size(); i < c; ++i)
-		{
-			plugins[i]->deserialize(serializer);
-		}
-	}
-
-
-	void PluginManager::onDestroyUniverse(Universe& universe)
-	{
-		PluginManagerImpl::PluginList& plugins = m_impl->m_plugins;
-		for(int i = 0, c = plugins.size(); i < c; ++i)
-		{
-			plugins[i]->onDestroyUniverse(universe);
-		}
-	}
-
-
-	void PluginManager::onCreateUniverse(Universe& universe)
-	{
-		PluginManagerImpl::PluginList& plugins = m_impl->m_plugins;
-		for(int i = 0, c = plugins.size(); i < c; ++i)
-		{
-			plugins[i]->onCreateUniverse(universe);
-		}
-	}
-
-	IPlugin* PluginManager::getPlugin(const char* name)
-	{
-		for(int i = 0; i < m_impl->m_plugins.size(); ++i)
-		{
-			if(strcmp(m_impl->m_plugins[i]->getName(), name) == 0)
+			for (int i = m_plugins.size() - 1; i >= 0; --i)
 			{
-				return m_impl->m_plugins[i];
+				m_plugins[i]->destroy();
+				LUMIX_DELETE(m_engine.getAllocator(), m_plugins[i]);
+			}
+
+			for (int i = 0; i < m_libraries.size(); ++i)
+			{
+				unloadLibrary(m_libraries[i]);
 			}
 		}
-		return 0;
-	}
 
-	IPlugin* PluginManager::load(const char* path)
-	{
-		g_log_info.log("plugins", "loading plugin %s", path);
-		typedef IPlugin* (*PluginCreator)();
-		HMODULE lib = LoadLibrary(TEXT(path));
-		if(lib)
+
+		void update(float dt) override
 		{
-			PluginCreator creator = (PluginCreator)GetProcAddress(lib, TEXT("createPlugin"));
-			if(creator)
+			for (int i = 0, c = m_plugins.size(); i < c; ++i)
 			{
-				IPlugin* plugin = creator();
-				if(!plugin->create(*m_impl->m_engine))
+				m_plugins[i]->update(dt);
+			}
+		}
+
+
+		void serialize(OutputBlob& serializer) override
+		{
+			for (int i = 0, c = m_plugins.size(); i < c; ++i)
+			{
+				m_plugins[i]->serialize(serializer);
+			}
+		}
+
+
+		void deserialize(InputBlob& serializer) override
+		{
+			for (int i = 0, c = m_plugins.size(); i < c; ++i)
+			{
+				m_plugins[i]->deserialize(serializer);
+			}
+		}
+
+
+		const Array<void*>& getLibraries() const override
+		{
+			return m_libraries;
+		}
+
+
+		const Array<IPlugin*>& getPlugins() const override
+		{
+			return m_plugins;
+		}
+
+
+		IPlugin* getPlugin(const char* name) override
+		{
+			for (int i = 0; i < m_plugins.size(); ++i)
+			{
+				if (compareString(m_plugins[i]->getName(), name) == 0)
 				{
-					LUX_DELETE(plugin);
-					ASSERT(false);
-					return false;
+					return m_plugins[i];
 				}
-				m_impl->m_plugins.push(plugin);
-				g_log_info.log("plugins", "plugin loaded");
-				return plugin;
 			}
+			return 0;
 		}
-		return 0;
-	}
 
 
-	void PluginManager::addPlugin(IPlugin* plugin)
-	{
-		m_impl->m_plugins.push(plugin);
-	}
-
-	
-	bool PluginManager::create(Engine& engine)
-	{
-		m_impl = LUX_NEW(PluginManagerImpl)();
-		m_impl->m_engine = &engine;
-		return true;
-	}
-
-
-	void PluginManager::destroy()
-	{
-		for(int i = 0; i < m_impl->m_plugins.size(); ++i)
+		DelegateList<void(void*)>& libraryLoaded() override
 		{
-			m_impl->m_plugins[i]->destroy();
-			LUX_DELETE(m_impl->m_plugins[i]);
+			return m_library_loaded;
 		}
-		LUX_DELETE(m_impl);
-		m_impl = NULL;
-	}
 
 
-} // ~namespace Lux
+		IPlugin* load(const char* path) override
+		{
+			g_log_info.log("plugins") << "loading plugin " << path;
+			typedef IPlugin* (*PluginCreator)(Engine&);
+
+			auto* lib = loadLibrary(path);
+			if (lib)
+			{
+				PluginCreator creator = (PluginCreator)getLibrarySymbol(lib, "createPlugin");
+				if (creator)
+				{
+					IPlugin* plugin = creator(m_engine);
+					if (!plugin || !plugin->create())
+					{
+						LUMIX_DELETE(m_engine.getAllocator(), plugin);
+						ASSERT(false);
+						return nullptr;
+					}
+					m_plugins.push(plugin);
+					m_libraries.push(lib);
+					m_library_loaded.invoke(lib);
+					g_log_info.log("plugins") << "plugin loaded";
+					return plugin;
+				}
+			}
+			unloadLibrary(lib);
+			return 0;
+		}
+
+
+		IAllocator& getAllocator() { return m_allocator; }
+
+
+		void addPlugin(IPlugin* plugin) override
+		{
+			m_plugins.push(plugin);
+		}
+
+
+	private:
+		Engine& m_engine;
+		DelegateList<void(void*)> m_library_loaded;
+		LibraryList m_libraries;
+		PluginList m_plugins;
+		IAllocator& m_allocator;
+};
+	
+
+PluginManager* PluginManager::create(Engine& engine)
+{
+	return LUMIX_NEW(engine.getAllocator(), PluginManagerImpl)(engine, engine.getAllocator());
+}
+
+
+void PluginManager::destroy(PluginManager* manager)
+{
+	LUMIX_DELETE(static_cast<PluginManagerImpl*>(manager)->getAllocator(), manager);
+}
+
+
+} // ~namespace Lumix

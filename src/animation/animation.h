@@ -3,7 +3,7 @@
 #include "core/resource.h"
 #include "core/resource_manager_base.h"
 
-namespace Lux
+namespace Lumix
 {
 
 namespace FS
@@ -12,45 +12,67 @@ namespace FS
 	class IFile;
 }
 
-struct Vec3;
-struct Quat;
+class Model;
 class Pose;
+struct Quat;
+struct Vec3;
 
 
-class LUX_ENGINE_API AnimationManager : public ResourceManagerBase
+class LUMIX_ANIMATION_API AnimationManager : public ResourceManagerBase
 {
 public:
-	AnimationManager() : ResourceManagerBase() {}
+	AnimationManager(IAllocator& allocator) 
+		: ResourceManagerBase(allocator)
+		, m_allocator(allocator)
+	{}
 	~AnimationManager() {}
+	IAllocator& getAllocator() { return m_allocator; }
 
 protected:
-	virtual Resource* createResource(const Path& path) override;
-	virtual void destroyResource(Resource& resource) override;
+	Resource* createResource(const Path& path) override;
+	void destroyResource(Resource& resource) override;
+
+private:
+	IAllocator& m_allocator;
 };
 
 
-class Animation : public Resource
+class LUMIX_ANIMATION_API Animation : public Resource
 {
 	public:
-		Animation(const Path& path, ResourceManager& resource_manager);
+		static const uint32 HEADER_MAGIC = 0x5f4c4146; // '_LAF'
+
+	public:
+		struct Header
+		{
+			uint32 magic;
+			uint32 version;
+			uint32 fps;
+		};
+
+	public:
+		Animation(const Path& path, ResourceManager& resource_manager, IAllocator& allocator);
 		~Animation();
 
-		void getPose(float time, Pose& pose) const;
+		void getPose(float time, Pose& pose, Model& model) const;
 		int getFrameCount() const { return m_frame_count; }
-		float getLength() const { return m_frame_count / 30.0f; }
+		float getLength() const { return m_frame_count / (float)m_fps; }
+		int getFPS() const { return m_fps; }
 
 	private:
-		void loaded(FS::IFile* file, bool success, FS::FileSystem& fs);
+		IAllocator& getAllocator();
 
-		virtual void doUnload(void) override;
-		virtual FS::ReadCallback getReadCallback(void) override;
+		void unload() override;
+		bool load(FS::IFile& file) override;
 
 	private:
 		int	m_frame_count;
 		int	m_bone_count;
 		Vec3* m_positions;
 		Quat* m_rotations;
+		uint32* m_bones;
+		int m_fps;
 };
 
 
-} // ~ namespace Lux
+} // ~ namespace Lumix

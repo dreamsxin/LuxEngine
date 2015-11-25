@@ -1,46 +1,47 @@
 #pragma once
 
 
-#include "core/lux.h"
+#include "core/lumix.h"
 #include "core/string.h"
+#include "engine/iplugin.h"
 #include "universe/universe.h"
 
 
-namespace Lux
+namespace Lumix
 {
 
 
 class Engine;
-class InputSystem;
-class Navigation;
-class Renderer;
+class Path;
 
 
-class LUX_ENGINE_API ScriptSystem
+class LUMIX_SCRIPT_API ScriptScene : public IScene
 {
 	public:
-		static ScriptSystem* create();
-		static void destroy(ScriptSystem* instance);
-
-		virtual void start() = 0;
-		virtual void stop() = 0;
-		virtual void update(float time_delta) = 0;
-		virtual void setUniverse(Universe* universe) = 0;
-		virtual Universe* getUniverse() const = 0;
-		virtual Component createScript(Entity entity) = 0;
-		virtual void setEngine(Engine& engine) = 0;
-		virtual Engine* getEngine() const = 0;
-
-		virtual void deserialize(ISerializer& serializer) = 0;
-		virtual void serialize(ISerializer& serializer) = 0;
-
 		virtual void getScriptPath(Component cmp, string& str) = 0;
+		virtual const Lumix::Path& getScriptPath(Component cmp) = 0;
 		virtual void setScriptPath(Component cmp, const string& str) = 0;
 
-	protected:
-		ScriptSystem() {}
-		~ScriptSystem() {}
+		virtual void serializeScripts(OutputBlob& blob) = 0;
+		virtual void deserializeScripts(InputBlob& blob) = 0;
+
+		virtual void beforeScriptCompiled() = 0;
+		virtual void afterScriptCompiled() = 0;
+
+		virtual DelegateList<void(const Path&, const Path&)>& scriptRenamed() = 0;
+
+		virtual Component getFirstScript() = 0;
+		virtual Component getNextScript(const Component& cmp) = 0;
+		virtual void setModulePath(const char* path) = 0;
+
+		virtual Engine& getEngine() = 0;
 };
 
 
-} // ~namespace Lux
+extern "C"
+{
+	LUMIX_SCRIPT_API IPlugin* createPlugin(Engine& engine);
+}
+
+
+} // ~namespace Lumix

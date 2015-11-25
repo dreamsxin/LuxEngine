@@ -1,26 +1,58 @@
-//#define _USE_MATH_DEFINES
-//#include <cmath>
 #include "core/crc32.h"
-#include "core/event_manager.h"
 #include "core/math_utils.h"
 #include "core/matrix.h"
 #include "core/quat.h"
+#include "core/resource_manager.h"
+#include "core/resource_manager_base.h"
 #include "editor/gizmo.h"
-#include "graphics/irender_device.h"
-#include "graphics/model.h"
-#include "graphics/renderer.h"
-#include "universe/entity_moved_event.h"
+#include "editor/world_editor.h"
+#include "engine.h"
+#include "renderer/model.h"
+#include "renderer/pipeline.h"
+#include "renderer/render_scene.h"
+#include "renderer/shader.h"
+#include "renderer/transient_geometry.h"
 #include "universe/universe.h"
+#include <cfloat>
+#include <cmath>
 
 
-namespace Lux
+namespace Lumix
 {
 
 
-Gizmo::Gizmo()
+static const uint32 RENDERABLE_HASH = crc32("renderable");
+static const float INFLUENCE_DISTANCE = 0.3f;
+static const uint32 X_COLOR = 0xff6363cf;
+static const uint32 Y_COLOR = 0xff63cf63;
+static const uint32 Z_COLOR = 0xffcf6363;
+static const uint32 SELECTED_COLOR = 0xff63cfcf;
+
+struct Vertex
 {
-//	m_handle = 0;
-	m_selected_entity.index = -1;
+	Vec3 position;
+	uint32 color;
+	float u, v;
+};
+
+
+Gizmo::Gizmo(WorldEditor& editor)
+	: m_editor(editor)
+{
+	m_vertex_decl.begin()
+		.add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
+		.add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true)
+		.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+		.end();
+
+	m_is_autosnap_down = false;
+	m_shader = nullptr;
+	m_pivot = Pivot::OBJECT_PIVOT;
+	m_coord_system = CoordSystem::LOCAL;
+	m_is_transforming = false;
+	m_mode = Mode::TRANSLATE;
+	m_step[int(Mode::TRANSLATE)] = 10;
+	m_step[int(Mode::ROTATE)] = 45;
 }
 
 
@@ -31,67 +63,85 @@ Gizmo::~Gizmo()
 
 void Gizmo::destroy()
 {
-	//h3dRemoveNode(m_handle);
+	m_editor.getEngine().getResourceManager().get(ResourceManager::SHADER)->unload(*m_shader);
 }
 
 
-void Gizmo::create(Renderer& renderer)
+void Gizmo::create()
 {
 	m_scale = 1;
-	m_renderer = &renderer;
-	m_model = renderer.getModel("models/gizmo.msh");
-}
-
-
-void Gizmo::hide()
-{
-	//h3dSetNodeFlags(m_handle, h3dGetNodeFlags(m_handle) | H3DNodeFlags::Inactive, true);
-}
-
-
-void Gizmo::show()
-{
-	/*h3dSetNodeFlags(m_handle, h3dGetNodeFlags(m_handle) & ~H3DNodeFlags::Inactive, true);
-	h3dSetNodeFlags(m_handle, h3dGetNodeFlags(m_handle) | H3DNodeFlags::NoCastShadow, true);	*/
+	m_shader = static_cast<Shader*>(m_editor.getEngine()
+									  .getResourceManager()
+									  .get(ResourceManager::SHADER)
+									  ->load(Path("shaders/debugline.shd")));
+	m_scene = static_cast<RenderScene*>(m_editor.getScene(crc32("renderer")));
 }
 
 
 void Gizmo::getMatrix(Matrix& mtx)
 {
-	m_selected_entity.getMatrix(mtx);
+	getEnityMatrix(mtx, 0);
 }
 
 
-void Gizmo::updateScale(Component camera)
+void Gizmo::getEnityMatrix(Matrix& mtx, int selection_index)
 {
-	if (m_selected_entity.isValid())
+	Entity entity = m_editor.getSelectedEntities()[selection_index];
+
+	if (m_pivot == Pivot::OBJECT_PIVOT)
 	{
-		Matrix camera_mtx;
-		camera.entity.getMatrix(camera_mtx);
-		Matrix mtx;
-		getMatrix(mtx);
-		Vec3 pos = mtx.getTranslation();
-		float fov;
-		static_cast<RenderScene*>(camera.system)->getCameraFOV(camera, fov);
-		float scale = tanf(fov * Math::PI / 180 * 0.5f) * (mtx.getTranslation() - camera_mtx.getTranslation()).length() * 2;
-		scale /= 20 * mtx.getXVector().length();
-		m_scale = scale;
+		mtx = m_universe->getPositionAndRotation(entity);
 	}
-}
-
-
-void Gizmo::setEntity(Entity entity)
-{
-	//h3dSetNodeFlags(m_handle, h3dGetNodeFlags(m_handle) | H3DNodeFlags::NoCastShadow, true);	
-	m_selected_entity = entity;
-	if(m_selected_entity.index != -1)
+	else if (m_pivot == Pivot::CENTER)
 	{
-		show();
+		mtx = m_universe->getPositionAndRotation(entity);
+		ComponentIndex cmp = m_scene->getRenderableComponent(entity);
+		if (cmp >= 0)
+		{
+			Model* model = m_scene->getRenderableModel(cmp);
+			if (model && model->isReady())
+			{
+				Vec3 center = (model->getAABB().getMin() + model->getAABB().getMax()) * 0.5f;
+				mtx.setTranslation(mtx.multiplyPosition(center));
+			}
+			else
+			{
+				mtx = m_universe->getPositionAndRotation(entity);
+			}
+		}
+		else
+		{
+			mtx = m_universe->getPositionAndRotation(entity);
+		}
 	}
 	else
 	{
-		hide();
+		ASSERT(false);
 	}
+
+	if (m_coord_system == CoordSystem::WORLD)
+	{
+		Vec3 pos = mtx.getTranslation();
+		mtx = Matrix::IDENTITY;
+		mtx.setTranslation(pos);
+	}
+}
+
+
+void Gizmo::updateScale(ComponentIndex camera)
+{
+	if (m_editor.getSelectedEntities().empty()) return;
+
+	Entity entity = m_scene->getCameraEntity(camera);
+	Vec3 camera_pos = m_universe->getPosition(entity);
+	Matrix mtx;
+	getMatrix(mtx);
+	Vec3 pos = mtx.getTranslation();
+	float fov = m_scene->getCameraFOV(camera);
+	float scale = tanf(fov * Math::PI / 180 * 0.5f) *
+					(mtx.getTranslation() - camera_pos).length() * 2;
+	scale /= 10 / mtx.getXVector().length();
+	m_scale = scale;
 }
 
 
@@ -101,133 +151,544 @@ void Gizmo::setUniverse(Universe* universe)
 }
 
 
-RayCastModelHit Gizmo::castRay(const Vec3& origin, const Vec3& dir)
+void Gizmo::toggleCoordSystem()
 {
-	if (m_selected_entity.isValid())
+	if (m_coord_system == CoordSystem::LOCAL)
 	{
-		return m_model->castRay(origin, dir, m_selected_entity.getMatrix(), m_scale);
+		m_coord_system = CoordSystem::WORLD;
 	}
-	RayCastModelHit hit;
-	hit.m_is_hit = false;
-	return hit;
-}
-
-
-void Gizmo::render(Renderer& renderer, IRenderDevice& render_device)
-{
-	if(m_selected_entity.isValid())
+	else if (m_coord_system == CoordSystem::WORLD)
 	{
-		Matrix scale_mtx = Matrix::IDENTITY;
-		scale_mtx.m11 = scale_mtx.m22 = scale_mtx.m33 = m_scale;
-		Matrix mtx = m_selected_entity.getMatrix() * scale_mtx;
-		renderer.renderModel(*m_model, mtx, render_device.getPipeline());
+		m_coord_system = CoordSystem::LOCAL;
+	}
+	else
+	{
+		ASSERT(false);
 	}
 }
 
 
-void Gizmo::startTransform(Component camera, int x, int y, TransformMode mode)
+void Gizmo::togglePivot()
 {
-	m_transform_mode = mode;
+	if (m_pivot == Pivot::CENTER)
+	{
+		m_pivot = Pivot::OBJECT_PIVOT;
+	}
+	else if (m_pivot == Pivot::OBJECT_PIVOT)
+	{
+		m_pivot = Pivot::CENTER;
+	}
+	else
+	{
+		ASSERT(false);
+	}
+}
+
+
+void Gizmo::setCameraRay(const Vec3& origin, const Vec3& cursor_dir)
+{
+	if (m_editor.getSelectedEntities().empty()) return;
+	if (m_is_transforming) return;
+
+	Matrix scale_mtx = Matrix::IDENTITY;
+	scale_mtx.m11 = scale_mtx.m22 = scale_mtx.m33 = m_scale;
+	Matrix gizmo_mtx;
+	getMatrix(gizmo_mtx);
+	Matrix mtx = gizmo_mtx * scale_mtx;
+	Vec3 pos = mtx.getTranslation();
+	m_camera_dir = (origin - pos).normalized();
+
+	m_transform_axis = Axis::NONE;
+
+	if (m_mode == Mode::TRANSLATE)
+	{
+		Matrix triangle_mtx = mtx;
+
+		if (dotProduct(gizmo_mtx.getXVector(), m_camera_dir) < 0) triangle_mtx.setXVector(-triangle_mtx.getXVector());
+		if (dotProduct(gizmo_mtx.getYVector(), m_camera_dir) < 0) triangle_mtx.setYVector(-triangle_mtx.getYVector());
+		if (dotProduct(gizmo_mtx.getZVector(), m_camera_dir) < 0) triangle_mtx.setZVector(-triangle_mtx.getZVector());
+
+		float t, tmin = FLT_MAX;
+		bool hit = Math::getRayTriangleIntersection(
+			origin, cursor_dir, pos, pos + triangle_mtx.getXVector() * 0.5f, pos + triangle_mtx.getYVector() * 0.5f, &t);
+		if (hit)
+		{
+			tmin = t;
+			m_transform_axis = Axis::XY;
+		}
+		hit = Math::getRayTriangleIntersection(
+			origin, cursor_dir, pos, pos + triangle_mtx.getYVector() * 0.5f, pos + triangle_mtx.getZVector() * 0.5f, &t);
+		if (hit && t < tmin)
+		{
+			tmin = t;
+			m_transform_axis = Axis::YZ;
+		}
+		hit = Math::getRayTriangleIntersection(
+			origin, cursor_dir, pos, pos + triangle_mtx.getXVector() * 0.5f, pos + triangle_mtx.getZVector() * 0.5f, &t);
+		if (hit && t < tmin)
+		{
+			m_transform_axis = Axis::XZ;
+		}
+
+		if (m_transform_axis != Axis::NONE) return;
+
+		float x_dist = Math::getLineSegmentDistance(origin, cursor_dir, pos, pos + mtx.getXVector());
+		float y_dist = Math::getLineSegmentDistance(origin, cursor_dir, pos, pos + mtx.getYVector());
+		float z_dist = Math::getLineSegmentDistance(origin, cursor_dir, pos, pos + mtx.getZVector());
+
+		float influenced_dist = m_scale * INFLUENCE_DISTANCE;
+		if (x_dist > influenced_dist && y_dist > influenced_dist && z_dist > influenced_dist)
+		{
+			m_transform_axis = Axis::NONE;
+			return;
+		}
+
+		if (x_dist < y_dist && x_dist < z_dist) m_transform_axis = Axis::X;
+		else if (y_dist < z_dist) m_transform_axis = Axis::Y;
+		else m_transform_axis = Axis::Z;
+
+		return;
+	}
+
+	if (m_mode == Mode::ROTATE)
+	{
+		Vec3 hit;
+		if (Math::getRaySphereIntersection(origin, cursor_dir, pos, m_scale, hit))
+		{
+			auto x = gizmo_mtx.getXVector();
+			float x_dist = fabs(dotProduct(hit, x) - dotProduct(x, pos));
+			
+			auto y = gizmo_mtx.getYVector();
+			float y_dist = fabs(dotProduct(hit, y) - dotProduct(y, pos));
+
+			auto z = gizmo_mtx.getZVector();
+			float z_dist = fabs(dotProduct(hit, z) - dotProduct(z, pos));
+
+			float qq= m_scale * 0.15f;
+			if (x_dist > qq && y_dist > qq && z_dist > qq)
+			{
+				m_transform_axis = Axis::NONE;
+				return;
+			}
+
+			if (x_dist < y_dist && x_dist < z_dist) m_transform_axis = Axis::X;
+			else if (y_dist < z_dist) m_transform_axis = Axis::Y;
+			else m_transform_axis = Axis::Z;
+		}
+	}
+}
+
+
+bool Gizmo::isHit()
+{
+	if (m_transform_axis == Axis::NONE) return false;
+	if (m_editor.getSelectedEntities().empty()) return false;
+
+	return true;
+}
+
+
+void Gizmo::renderTranslateGizmo(PipelineInstance& pipeline)
+{
+	if (!m_shader->isReady()) return;
+
+	Matrix scale_mtx = Matrix::IDENTITY;
+	scale_mtx.m11 = scale_mtx.m22 = scale_mtx.m33 = m_scale;
+	Matrix gizmo_mtx;
+	getMatrix(gizmo_mtx);
+	Matrix mtx = gizmo_mtx * scale_mtx;
+	
+	Vertex vertices[9];
+	uint16 indices[9];
+	vertices[0].position = Vec3(0, 0, 0);
+	vertices[0].color = m_transform_axis == Axis::X ? SELECTED_COLOR : X_COLOR;
+	indices[0] = 0;
+	vertices[1].position = Vec3(1, 0, 0);
+	vertices[1].color = m_transform_axis == Axis::X ? SELECTED_COLOR : X_COLOR;
+	indices[1] = 1;
+	vertices[2].position = Vec3(0, 0, 0);
+	vertices[2].color = m_transform_axis == Axis::Y ? SELECTED_COLOR : Y_COLOR;
+	indices[2] = 2;
+	vertices[3].position = Vec3(0, 1, 0);
+	vertices[3].color = m_transform_axis == Axis::Y ? SELECTED_COLOR : Y_COLOR;
+	indices[3] = 3;
+	vertices[4].position = Vec3(0, 0, 0);
+	vertices[4].color = m_transform_axis == Axis::Z ? SELECTED_COLOR : Z_COLOR;
+	indices[4] = 4;
+	vertices[5].position = Vec3(0, 0, 1);
+	vertices[5].color = m_transform_axis == Axis::Z ? SELECTED_COLOR : Z_COLOR;
+	indices[5] = 5;
+
+	Lumix::TransientGeometry geom(vertices, 6, m_vertex_decl, indices, 6);
+	pipeline.render(geom,
+		mtx,
+		0,
+		6,
+		BGFX_STATE_PT_LINES | BGFX_STATE_DEPTH_TEST_LEQUAL,
+		m_shader->getInstance(0).m_program_handles[pipeline.getPassIdx()]);
+
+	if (dotProduct(gizmo_mtx.getXVector(), m_camera_dir) < 0) mtx.setXVector(-mtx.getXVector());
+	if (dotProduct(gizmo_mtx.getYVector(), m_camera_dir) < 0) mtx.setYVector(-mtx.getYVector());
+	if (dotProduct(gizmo_mtx.getZVector(), m_camera_dir) < 0) mtx.setZVector(-mtx.getZVector());
+
+	vertices[0].position = Vec3(0, 0, 0);
+	vertices[0].color = m_transform_axis == Axis::XY ? SELECTED_COLOR : Z_COLOR;
+	indices[0] = 0;
+	vertices[1].position = Vec3(0.5f, 0, 0);
+	vertices[1].color = m_transform_axis == Axis::XY ? SELECTED_COLOR : Z_COLOR;
+	indices[1] = 1;
+	vertices[2].position = Vec3(0, 0.5f, 0);
+	vertices[2].color = m_transform_axis == Axis::XY ? SELECTED_COLOR : Z_COLOR;
+	indices[2] = 2;
+
+	vertices[3].position = Vec3(0, 0, 0);
+	vertices[3].color = m_transform_axis == Axis::YZ ? SELECTED_COLOR : X_COLOR;
+	indices[3] = 3;
+	vertices[4].position = Vec3(0, 0.5f, 0);
+	vertices[4].color = m_transform_axis == Axis::YZ ? SELECTED_COLOR : X_COLOR;
+	indices[4] = 4;
+	vertices[5].position = Vec3(0, 0, 0.5f);
+	vertices[5].color = m_transform_axis == Axis::YZ ? SELECTED_COLOR : X_COLOR;
+	indices[5] = 5;
+
+	vertices[6].position = Vec3(0, 0, 0);
+	vertices[6].color = m_transform_axis == Axis::XZ ? SELECTED_COLOR : Y_COLOR;
+	indices[6] = 6;
+	vertices[7].position = Vec3(0.5f, 0, 0);
+	vertices[7].color = m_transform_axis == Axis::XZ ? SELECTED_COLOR : Y_COLOR;
+	indices[7] = 7;
+	vertices[8].position = Vec3(0, 0, 0.5f);
+	vertices[8].color = m_transform_axis == Axis::XZ ? SELECTED_COLOR : Y_COLOR;
+	indices[8] = 8;
+
+	Lumix::TransientGeometry geom2(vertices, 9, m_vertex_decl, indices, 9);
+	auto program_handle = m_shader->getInstance(0).m_program_handles[pipeline.getPassIdx()];
+	pipeline.render(geom2, mtx, 0, 9, BGFX_STATE_DEPTH_TEST_LEQUAL, program_handle);
+}
+
+
+void Gizmo::renderQuarterRing(PipelineInstance& pipeline, const Matrix& mtx, const Vec3& a, const Vec3& b, uint32 color)
+{
+	Vertex vertices[1200];
+	uint16 indices[1200];
+	const float ANGLE_STEP = Math::degreesToRadians(1.0f / 100.0f * 360.0f);
+	Vec3 n = crossProduct(a, b) * 0.05f;
+	int offset = -1;
+	for (int i = 0; i < 25; ++i)
+	{
+		float angle = i * ANGLE_STEP;
+		float s = sinf(angle);
+		float c = cosf(angle);
+		float sn = sinf(angle + ANGLE_STEP);
+		float cn = cosf(angle + ANGLE_STEP);
+
+		Vec3 p0 = a * s + b * c - n * 0.5f;
+		Vec3 p1 = a * sn + b * cn - n * 0.5f;
+
+		++offset;
+		vertices[offset].position = p0;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = p1;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = p0 + n;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = p1;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = p1 + n;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = p0 + n;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+	}
+
+	Lumix::TransientGeometry ring_geom(vertices, offset, m_vertex_decl, indices, offset);
+	pipeline.render(ring_geom,
+		mtx,
+		0,
+		offset,
+		BGFX_STATE_DEPTH_TEST_LEQUAL,
+		m_shader->getInstance(0).m_program_handles[pipeline.getPassIdx()]);
+
+	const int GRID_SIZE = 5;
+	offset = -1;
+	for (int i = 0; i <= GRID_SIZE; ++i)
+	{
+		float t = 1.0f / GRID_SIZE * i;
+		float ratio = sinf(acosf(t));
+
+		++offset;
+		vertices[offset].position = a * t;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = a * t + b * ratio;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = b * t + a * ratio;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+
+		++offset;
+		vertices[offset].position = b * t;
+		vertices[offset].color = color;
+		indices[offset] = offset;
+	}
+	Lumix::TransientGeometry plane_geom(vertices, offset, m_vertex_decl, indices, offset);
+	pipeline.render(plane_geom,
+		mtx,
+		0,
+		offset,
+		BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_PT_LINES,
+		m_shader->getInstance(0).m_program_handles[pipeline.getPassIdx()]);
+};
+
+
+void Gizmo::renderRotateGizmo(PipelineInstance& pipeline)
+{
+	if (!m_shader->isReady()) return;
+
+	Matrix scale_mtx = Matrix::IDENTITY;
+	scale_mtx.m11 = scale_mtx.m22 = scale_mtx.m33 = m_scale;
+	Matrix gizmo_mtx;
+	getMatrix(gizmo_mtx);
+	Matrix mtx = gizmo_mtx * scale_mtx;
+
+	Vec3 pos = mtx.getTranslation();
+	Vec3 right(1, 0, 0);
+	Vec3 up(0, 1, 0);
+	Vec3 dir(0, 0, 1);
+	
+	if (dotProduct(gizmo_mtx.getXVector(), m_camera_dir) < 0) right = -right;
+	if (dotProduct(gizmo_mtx.getYVector(), m_camera_dir) < 0) up = -up;
+	if (dotProduct(gizmo_mtx.getZVector(), m_camera_dir) < 0) dir = -dir;
+
+	if (!m_is_transforming)
+	{
+		renderQuarterRing(pipeline, mtx, right, up, m_transform_axis == Axis::Z ? SELECTED_COLOR : Z_COLOR);
+		renderQuarterRing(pipeline, mtx, up, dir, m_transform_axis == Axis::X ? SELECTED_COLOR : X_COLOR);
+		renderQuarterRing(pipeline, mtx, right, dir, m_transform_axis == Axis::Y ? SELECTED_COLOR : Y_COLOR);
+	}
+	else
+	{
+		Vec3 axis1, axis2;
+		switch (m_transform_axis)
+		{
+		case Axis::X:
+			axis1 = up;
+			axis2 = dir;
+			break;
+		case Axis::Y:
+			axis1 = right;
+			axis2 = dir;
+			break;
+		case Axis::Z:
+			axis1 = right;
+			axis2 = up;
+			break;
+		}
+		renderQuarterRing(pipeline, mtx, axis1, axis2, SELECTED_COLOR);
+		renderQuarterRing(pipeline, mtx, -axis1, axis2, SELECTED_COLOR);
+		renderQuarterRing(pipeline, mtx, -axis1, -axis2, SELECTED_COLOR);
+		renderQuarterRing(pipeline, mtx, axis1, -axis2, SELECTED_COLOR);
+	}
+}
+
+
+void Gizmo::render(PipelineInstance& pipeline)
+{
+	if (m_editor.getSelectedEntities().empty()) return;
+	if (m_mode == Mode::TRANSLATE)
+	{
+		renderTranslateGizmo(pipeline);
+	}
+	else
+	{
+		renderRotateGizmo(pipeline);
+	}
+}
+
+
+void Gizmo::stopTransform()
+{
+	m_is_transforming = false;
+}
+
+
+void Gizmo::startTransform(ComponentIndex camera, int x, int y)
+{
+	m_is_transforming = m_transform_axis != Axis::NONE;
 	m_transform_point = getMousePlaneIntersection(camera, x, y);
 	m_relx_accum = m_rely_accum = 0;
 }
 
 
-void Gizmo::transform(Component camera, TransformOperation operation, int x, int y, int relx, int rely, int flags)
+float Gizmo::computeRotateAngle(int relx, int rely, bool use_step)
 {
-	if(m_selected_entity.index != -1)
+	if (use_step)
 	{
-		if(operation == TransformOperation::ROTATE && m_transform_mode != TransformMode::CAMERA_XZ)
+		m_relx_accum += relx;
+		m_rely_accum += rely;
+		if (m_relx_accum + m_rely_accum > 50)
 		{
-			Vec3 pos = m_selected_entity.getPosition();
-			Matrix emtx;
-			m_selected_entity.getMatrix(emtx);
-			Vec3 axis;
-			switch(m_transform_mode)
-			{
-				case TransformMode::X:
-					axis = emtx.getXVector();
-					break;
-				case TransformMode::Y:
-					axis = emtx.getYVector();
-					break;
-				case TransformMode::Z:
-					axis = emtx.getZVector();
-					break;
-			}
-			float angle = 0;
-			if(flags & Flags::FIXED_STEP)
-			{
-				m_relx_accum += relx;
-				m_rely_accum += rely;
-				if(m_relx_accum + m_rely_accum > 50)
-				{
-					angle = (float)Math::PI / 4;
-					m_relx_accum = m_rely_accum = 0;
-				}
-				else if(m_relx_accum + m_rely_accum < -50)
-				{
-					angle = -(float)Math::PI / 4;
-					m_relx_accum = m_rely_accum = 0;
-				}
-				else 
-				{
-					angle = 0;
-				}
-			}
-			else
-			{
-				angle = (relx + rely) / 100.0f;
-			}
-			m_selected_entity.setRotation(m_selected_entity.getRotation() * Quat(axis, angle));
-			m_selected_entity.setPosition(pos);
+			m_relx_accum = m_rely_accum = 0;
+			return Math::degreesToRadians(float(getStep()));
+		}
+		else if (m_relx_accum + m_rely_accum < -50)
+		{
+			m_relx_accum = m_rely_accum = 0;
+			return -Math::degreesToRadians(float(getStep()));
 		}
 		else
 		{
-			Vec3 intersection = getMousePlaneIntersection(camera, x, y);
-			Vec3 delta = intersection - m_transform_point;
+			return 0;
+		}
+	}
+	return (relx + rely) / 100.0f;
+}
+
+void Gizmo::rotate(int relx, int rely, bool use_step)
+{
+	Universe* universe = m_editor.getUniverse();
+	Array<Vec3> new_positions(m_editor.getAllocator());
+	Array<Quat> new_rotations(m_editor.getAllocator());
+	for (int i = 0, c = m_editor.getSelectedEntities().size(); i < c; ++i)
+	{
+		Vec3 pos = universe->getPosition(m_editor.getSelectedEntities()[i]);
+		Matrix gizmo_mtx;
+		getMatrix(gizmo_mtx);
+		Vec3 axis;
+		switch (m_transform_axis)
+		{
+			case Axis::X: axis = gizmo_mtx.getXVector(); break;
+			case Axis::Y: axis = gizmo_mtx.getYVector(); break;
+			case Axis::Z: axis = gizmo_mtx.getZVector(); break;
+		}
+		float angle = computeRotateAngle(relx, rely, use_step);
+
+		Quat old_rot = universe->getRotation(m_editor.getSelectedEntities()[i]);
+		Quat new_rot = old_rot * Quat(axis, angle);
+		new_rot.normalize();
+		new_rotations.push(new_rot);
+
+		Vec3 pdif = gizmo_mtx.getTranslation() - pos;
+
+		old_rot.conjugate();
+		pos = -pdif;
+		pos = new_rot * (old_rot * pos);
+		pos += gizmo_mtx.getTranslation();
+
+		new_positions.push(pos);
+	}
+	m_editor.setEntitiesPositionsAndRotations(&m_editor.getSelectedEntities()[0],
+		&new_positions[0],
+		&new_rotations[0],
+		new_positions.size());
+}
+
+
+void Gizmo::transform(ComponentIndex camera, int x, int y, int relx, int rely, bool use_step)
+{
+	if (!m_is_transforming) return;
+
+	if (m_mode == Mode::ROTATE)
+	{
+		rotate(relx, rely, use_step);
+	}
+	else
+	{
+		Vec3 intersection = getMousePlaneIntersection(camera, x, y);
+		Vec3 delta = intersection - m_transform_point;
+		if (!use_step || delta.length() > float(getStep()))
+		{
+			if (use_step) delta = delta.normalized() * float(getStep());
+
+			Array<Vec3> new_positions(m_editor.getAllocator());
+			for (int i = 0, ci = m_editor.getSelectedEntities().size(); i < ci; ++i)
+			{
+				Vec3 pos = m_editor.getUniverse()->getPosition(m_editor.getSelectedEntities()[i]);
+				pos += delta;
+				new_positions.push(pos);
+			}
+			m_editor.setEntitiesPositions(&m_editor.getSelectedEntities()[0],
+				&new_positions[0],
+				new_positions.size());
+			if (m_is_autosnap_down) m_editor.snapDown();
+
 			m_transform_point = intersection;
-			Vec3 pos = m_selected_entity.getPosition();
-			pos += delta;
-			m_selected_entity.setPosition(pos);
 		}
 	}
 }
 
 
-Vec3 Gizmo::getMousePlaneIntersection(Component camera, int x, int y)
+Vec3 Gizmo::getMousePlaneIntersection(ComponentIndex camera, int x, int y)
 {
 	Vec3 origin, dir;
-	RenderScene* scene = static_cast<RenderScene*>(camera.system);
-	scene->getRay(camera, (float)x, (float)y, origin, dir);
+	m_scene->getRay(camera, (float)x, (float)y, origin, dir);
 	dir.normalize();
-	Matrix camera_mtx;
-	camera.entity.getMatrix(camera_mtx);
-	if(m_transform_mode == TransformMode::CAMERA_XZ)
+	Entity camera_entity = m_scene->getCameraEntity(camera);
+	Matrix camera_mtx = m_universe->getPositionAndRotation(camera_entity);
+	Matrix gizmo_mtx;
+	getMatrix(gizmo_mtx);
+	bool is_two_axed = m_transform_axis == Axis::XZ || m_transform_axis == Axis::XY ||
+					   m_transform_axis == Axis::YZ;
+	if (is_two_axed)
 	{
-		Vec3 a = crossProduct(Vec3(0, 1, 0), camera_mtx.getXVector());
-		Vec3 b = crossProduct(Vec3(0, 1, 0), camera_mtx.getZVector());
-		Vec3 plane_normal = crossProduct(a, b);
-		return Math::getRayPlaneIntersecion(origin, dir, m_selected_entity.getPosition(), plane_normal);
+		Vec3 plane_normal;
+		switch (m_transform_axis)
+		{
+		case Axis::XZ:
+			plane_normal = gizmo_mtx.getYVector();
+			break;
+		case Axis::XY:
+			plane_normal = gizmo_mtx.getZVector();
+			break;
+		case Axis::YZ:
+			plane_normal = gizmo_mtx.getXVector();
+			break;
+		}
+		float t;
+		if (Math::getRayPlaneIntersecion(origin, dir, gizmo_mtx.getTranslation(), plane_normal, t))
+		{
+			return origin + dir * t;
+		}
+		return origin;
 	}
 	Vec3 axis;
-	switch(m_transform_mode)
+	switch (m_transform_axis)
 	{
-		case TransformMode::X:
-			axis = m_selected_entity.getMatrix().getXVector();
+		case Axis::X:
+			axis = gizmo_mtx.getXVector();
 			break;
-		case TransformMode::Y:
-			axis = m_selected_entity.getMatrix().getYVector();
+		case Axis::Y:
+			axis = gizmo_mtx.getYVector();
 			break;
-		case TransformMode::Z:
-			axis = m_selected_entity.getMatrix().getZVector();
+		case Axis::Z:
+			axis = gizmo_mtx.getZVector();
 			break;
 	}
-	Vec3 pos = m_selected_entity.getPosition();
+	Vec3 pos = gizmo_mtx.getTranslation();
 	Vec3 normal = crossProduct(crossProduct(dir, axis), dir);
 	float d = dotProduct(origin - pos, normal) / dotProduct(axis, normal);
 	return axis * d + pos;
 }
 
 
-} // !namespace Lux
+} // !namespace Lumix

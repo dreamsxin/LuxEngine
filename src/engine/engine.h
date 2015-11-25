@@ -1,104 +1,91 @@
 #pragma once
 
 
-#include "core/lux.h"
-#include "core/event_manager.h"
+#include "lumix.h"
+#include "core/array.h"
 
 
-namespace Lux
+namespace Lumix
 {
-	namespace FS
+namespace FS
+{
+class FileSystem;
+}
+
+namespace MTJD
+{
+class Manager;
+}
+
+class InputBlob;
+class EditorServer;
+class Hierarchy;
+class InputSystem;
+class IPlugin;
+class IPropertyDescriptor;
+class IScene;
+class JsonSerializer;
+class OutputBlob;
+class PluginManager;
+class ResourceManager;
+class Universe;
+class WorldEditor;
+
+
+struct LUMIX_ENGINE_API UniverseContext
+{
+	UniverseContext(IAllocator& allocator)
+		: m_scenes(allocator)
 	{
-			class FileSystem;
 	}
 
-	class EditorServer;
-	class EventManager;
-	class InputSystem;
-	class IPlugin;
-	class ISerializer;
-	class PluginManager;
-	class Renderer;
-	class RenderScene;
-	class ResourceManager;
-	class ScriptSystem;
-	class Universe;
+	IScene* getScene(uint32 hash) const;
+
+	Universe* m_universe;
+	Hierarchy* m_hierarchy;
+	Array<IScene*> m_scenes;
+};
 
 
-	class LUX_ENGINE_API Engine
+
+class LUMIX_ENGINE_API Engine
+{
+public:
+	struct PlatformData
 	{
-		public:
-			class UniverseCreatedEvent;
-			class UniverseDestroyedEvent;
-
-		public:
-			Engine() { m_impl = NULL; }
-			~Engine() { ASSERT(m_impl == NULL); }
-
-			bool create(const char* base_path, FS::FileSystem* fs, EditorServer* editor_server);
-			void destroy();
-
-			Universe* createUniverse();
-			void destroyUniverse();
-
-			EditorServer* getEditorServer() const;
-			FS::FileSystem& getFileSystem();
-			Renderer& getRenderer();
-			ScriptSystem& getScriptSystem();
-			InputSystem& getInputSystem();
-			PluginManager& getPluginManager();
-			EventManager& getEventManager() const;
-			IPlugin* loadPlugin(const char* name);
-			Universe* getUniverse() const;
-			RenderScene* getRenderScene() const;
-
-			ResourceManager& getResourceManager() const;
-
-			const char* getBasePath() const;
-			void update();
-			void serialize(ISerializer& serializer);
-			void deserialize(ISerializer& serializer);
-			float getFPS() const;
-
-		private:
-			struct EngineImpl* m_impl;
+		void* window_handle;
 	};
 
-	class LUX_ENGINE_API Engine::UniverseCreatedEvent : public Event
-	{
-		public:
-			static const Event::Type s_type;
+public:
+	virtual ~Engine() {}
 
-		public:
-			UniverseCreatedEvent(Universe& universe)
-				: m_universe(universe)
-			{
-				m_type = s_type;
-			}
+	static Engine* create(FS::FileSystem* fs, IAllocator& allocator);
+	static void destroy(Engine* engine, IAllocator& allocator);
 
-			Universe& getUniverse() { return m_universe; }
+	virtual UniverseContext& createUniverse() = 0;
+	virtual void destroyUniverse(UniverseContext& context) = 0;
+	virtual void setPlatformData(const PlatformData& data) = 0;
+	virtual const PlatformData& getPlatformData() = 0;
 
-		private:
-			Universe& m_universe;
-	};
+	virtual FS::FileSystem& getFileSystem() = 0;
+	virtual InputSystem& getInputSystem() = 0;
+	virtual PluginManager& getPluginManager() = 0;
+	virtual MTJD::Manager& getMTJDManager() = 0;
+	virtual ResourceManager& getResourceManager() = 0;
+	virtual IAllocator& getAllocator() = 0;
 
-	class LUX_ENGINE_API Engine::UniverseDestroyedEvent : public Event
-	{
-		public:
-			static const Event::Type s_type;
+	virtual void startGame(UniverseContext& context) = 0;
+	virtual void stopGame(UniverseContext& context) = 0;
 
-		public:
-			UniverseDestroyedEvent(Universe& universe)
-				: m_universe(universe)
-			{
-				m_type = s_type;
-			}
+	virtual void update(UniverseContext& context) = 0;
+	virtual uint32 serialize(UniverseContext& ctx, OutputBlob& serializer) = 0;
+	virtual bool deserialize(UniverseContext& ctx, InputBlob& serializer) = 0;
+	virtual float getFPS() const = 0;
+	virtual float getLastTimeDelta() = 0;
 
-			Universe& getUniverse() { return m_universe; }
-
-		private:
-			Universe& m_universe;
-	};
+protected:
+	Engine() {}
+};
 
 
-} // ~namespace Lux
+} // ~namespace Lumix

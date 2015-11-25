@@ -1,41 +1,37 @@
 #pragma once
 
 
-#include "core/lux.h"
-#include "engine/iplugin.h"
+#include "lumix.h"
+#include "iplugin.h"
 
 
-namespace Lux
+namespace physx
+{
+
+	class PxControllerManager;
+	class PxCooking;
+	class PxPhysics;
+
+} // namespace physx
+
+
+namespace Lumix
 {
 
 
-class LUX_PHYSICS_API PhysicsSystem : public IPlugin
+class LUMIX_PHYSICS_API PhysicsSystem : public IPlugin
 {
 	friend class PhysicsScene;
 	friend struct PhysicsSceneImpl;
 	public:
-		PhysicsSystem() { m_impl = 0; }
+		const char* getName() const override { return "physics"; }
 		
-		virtual bool create(Engine& engine) override;
-		virtual void destroy() override;
-		virtual void onCreateUniverse(Universe& universe) override;
-		virtual void onDestroyUniverse(Universe& universe) override;
-		virtual void serialize(ISerializer& serializer) override;
-		virtual void deserialize(ISerializer& serializer) override;
-		virtual void update(float dt) override;
-		virtual Component createComponent(uint32_t component_type, const Entity& entity) override;
-		virtual const char* getName() const override { return "physics"; }
-		virtual void sendMessage(const char* message) override;
+		virtual physx::PxPhysics* getPhysics() = 0;
+		virtual physx::PxCooking* getCooking() = 0;
 
-	private:
-		struct PhysicsSystemImpl* m_impl;
+	protected:
+		PhysicsSystem() {}
 };
 
 
-extern "C"
-{
-	LUX_PHYSICS_API IPlugin* createPlugin();
-}
-
-
-} // !namespace Lux
+} // !namespace Lumix

@@ -1,32 +1,53 @@
 #pragma once
 
 
-#include "core/lux.h"
-#include "universe/component.h"
+#include "lumix.h"
 
 
-namespace Lux
+namespace Lumix
 {
 	class Engine;
-	class ISerializer;
+	class InputBlob;
+	class IPlugin;
+	class OutputBlob;
 	class Universe;
+	struct UniverseContext;
 
 
-	class LUX_ENGINE_API IPlugin abstract
+	class LUMIX_ENGINE_API IScene
+	{
+		public:
+			virtual ~IScene() {}
+
+			virtual ComponentIndex createComponent(uint32, Entity) = 0;
+			virtual void destroyComponent(ComponentIndex component, uint32 type) = 0;
+			virtual void serialize(OutputBlob& serializer) = 0;
+			virtual void deserialize(InputBlob& serializer, int version) = 0;
+			virtual IPlugin& getPlugin() const = 0;
+			virtual void update(float time_delta) = 0;
+			virtual bool ownComponentType(uint32 type) const = 0;
+			virtual Universe& getUniverse() = 0;
+			virtual void startGame() {}
+			virtual void stopGame() {}
+			virtual int getVersion() const { return -1; }
+	};
+
+
+	class LUMIX_ENGINE_API IPlugin
 	{
 		public:
 			virtual ~IPlugin();
 
-			virtual bool create(Engine& engine) = 0;
+			virtual bool create() = 0;
 			virtual void destroy() = 0;
-			virtual void onCreateUniverse(Universe&) {}
-			virtual void onDestroyUniverse(Universe&) {}
-			virtual void serialize(ISerializer&) {}
-			virtual void deserialize(ISerializer&) {}
+			virtual void serialize(OutputBlob&) {}
+			virtual void deserialize(InputBlob&) {}
 			virtual void update(float) {}
-			virtual Component createComponent(uint32_t, const Entity&) = 0;
 			virtual const char* getName() const = 0;
 			virtual void sendMessage(const char*) {};
+
+			virtual IScene* createScene(UniverseContext&) { return nullptr; }
+			virtual void destroyScene(IScene*) { ASSERT(false); }
 	};
 
 

@@ -1,7 +1,7 @@
-#include "engine/iplugin.h"
+#include "iplugin.h"
 
 
-namespace Lux
+namespace Lumix
 {
 	IPlugin::~IPlugin() {}
 }

@@ -1,108 +1,111 @@
 #pragma once
 
 
-#include "core/lux.h"
-#include "core/vec3.h"
+#include "lumix.h"
+#include "core/vec.h"
 #include "universe/universe.h"
-#include "graphics/model.h"
+#include "renderer/model.h"
+#include <bgfx/bgfx.h>
 
 
-namespace Lux
+namespace Lumix
 {
 
 
 class Event;
-class IRenderDevice;
 struct Matrix;
-class Renderer;
+class PipelineInstance;
+class RenderScene;
 class Universe;
+class WorldEditor;
 
 
-class LUX_ENGINE_API Gizmo
+class LUMIX_EDITOR_API Gizmo
 {
 	public:
-		struct Flags
+		enum class Mode : uint32
 		{
-			enum Value
-			{
-				FIXED_STEP = 1
-			};
+			ROTATE,
+			TRANSLATE,
 
-			Flags() {}
-			Flags(Value _value) : value(_value) {}
-			Flags(int _value) : value((Value)_value) {}
-		
-			operator Value() const { return value; }
-			operator int() const { return value; }
-
-			Value value;
+			COUNT
 		};
 
-		struct TransformOperation
+		enum class Axis: uint32
 		{
-			enum Value
-			{
-				ROTATE,
-				TRANSLATE
-			};
-
-			TransformOperation() {}
-			TransformOperation(Value _value) : value(_value) {}
-
-			operator Value() const { return value; }
-
-			Value value;
+			NONE,
+			X,
+			Y,
+			Z,
+			XY,
+			XZ,
+			YZ
 		};
 
-		struct TransformMode
+		enum class Pivot
 		{
-			enum Value
-			{
-				X,
-				Y,
-				Z,
-				CAMERA_XZ
-			};
+			CENTER,
+			OBJECT_PIVOT
+		};
 
-			TransformMode() {}
-			TransformMode(Value _value) : value(_value) {}
-
-			operator Value() const { return value; }
-
-			Value value;
+		enum class CoordSystem
+		{
+			LOCAL,
+			WORLD
 		};
 
 	public:
-		Gizmo();
+		Gizmo(WorldEditor& editor);
 		~Gizmo();
 
-		void create(Renderer& renderer);
+		void setCameraRay(const Vec3& origin, const Vec3& cursor_dir);
+		void create();
 		void destroy();
-		void hide();
-		void show();
-		void updateScale(Component camera);
-		void setEntity(Entity entity);
+		void updateScale(ComponentIndex camera);
 		void setUniverse(Universe* universe);
-		void startTransform(Component camera, int x, int y, TransformMode mode);
-		void transform(Component camera, TransformOperation operation, int x, int y, int relx, int rely, int flags);
-		void render(Renderer& renderer, IRenderDevice& render_device);
-		RayCastModelHit castRay(const Vec3& origin, const Vec3& dir);
+		void startTransform(ComponentIndex camera, int x, int y);
+		void stopTransform();
+		void setMode(Mode mode) { m_mode = mode; }
+		Mode getMode() const { return m_mode; }
+		void transform(ComponentIndex camera, int x, int y, int relx, int rely, bool use_step);
+		void render(PipelineInstance& pipeline);
+		bool isHit();
+		void togglePivot();
+		void toggleCoordSystem();
+		int getStep() const { return m_step[int(m_mode)]; }
+		void setStep(int step) { m_step[int(m_mode)] = step; }
+		bool isAutosnapDown() const { return m_is_autosnap_down; }
+		void setAutosnapDown(bool snap) { m_is_autosnap_down = snap; }
 
 	private:
 		void getMatrix(Matrix& mtx);
-		Vec3 getMousePlaneIntersection(Component camera, int x, int y);
+		void getEnityMatrix(Matrix& mtx, int selection_index);
+		Vec3 getMousePlaneIntersection(ComponentIndex camera, int x, int y);
+		void rotate(int relx, int rely, bool use_step);
+		float computeRotateAngle(int relx, int rely, bool use_step);
+		void renderTranslateGizmo(PipelineInstance& pipeline);
+		void renderRotateGizmo(PipelineInstance& pipeline);
+		void renderQuarterRing(PipelineInstance& pipeline, const Matrix& mtx, const Vec3& a, const Vec3& b, uint32 color);
 
 	private:
-		Renderer* m_renderer;
-		Entity m_selected_entity;
+		WorldEditor& m_editor;
+		RenderScene* m_scene;
 		Universe* m_universe;
-		TransformMode m_transform_mode;
+		Axis m_transform_axis;
 		Vec3 m_transform_point;
+		int m_step[int(Mode::COUNT)];
 		int m_relx_accum;
 		int m_rely_accum;
-		class Model* m_model;
 		float m_scale;
+		class Shader* m_shader;
+		Pivot m_pivot;
+		Mode m_mode;
+		CoordSystem m_coord_system;
+		bool m_is_transforming;
+		bool m_is_autosnap_down;
+		Vec3 m_camera_dir;
+		bgfx::VertexDecl m_vertex_decl;
 };
 
 
-} // !namespace Lux
+} // !namespace Lumix

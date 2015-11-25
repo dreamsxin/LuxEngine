@@ -1,33 +1,46 @@
 #pragma once
 
 
+#include "core/matrix.h"
 #include "universe/universe.h"
 
 
-namespace Lux
+namespace Lumix
 {
 
 
-struct Component;
 class Engine;
-struct Entity;
-class IRenderDevice;
 class Model;
-class Renderer;
+class PipelineInstance;
 class RenderScene;
+class WorldEditor;
 
 
 class EditorIcon
 {
-	friend class EditorApp;
 	public:
-		void create(Engine& engine, RenderScene& scene, Entity& entity, const Component& cmp);
-		void destroy();
-		void render(Renderer* renderer, IRenderDevice& render_device);
+		enum Type
+		{
+			PHYSICAL_CONTROLLER,
+			PHYSICAL_BOX,
+			CAMERA,
+			LIGHT,
+			TERRAIN,
+			ENTITY,
+			COUNT
+		};
+
+	public:
+		EditorIcon(WorldEditor& editor, RenderScene& scene, Entity entity);
+		~EditorIcon();
+		void render(PipelineInstance& pipeline);
 		void show();
 		void hide();
 		float hit(const Vec3& origin, const Vec3& dir) const;
 		Entity getEntity() const { return m_entity; }
+
+		static bool loadIcons(Engine& engine);
+		static void unloadIcons();
 
 	private:
 		RenderScene* m_scene;
@@ -36,6 +49,7 @@ class EditorIcon
 		Matrix m_matrix;
 		float m_scale;
 		bool m_is_visible;
+		Type m_type;
 };
 
 
