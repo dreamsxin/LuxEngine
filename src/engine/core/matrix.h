@@ -1,8 +1,8 @@
 #pragma once
 
 
-#include "lumix.h"
-#include "core/vec.h"
+#include "engine/lumix.h"
+#include "engine/core/vec.h"
 
 
 namespace Lumix
@@ -142,6 +142,21 @@ struct LUMIX_ENGINE_API Matrix
 		this->m43 = m41 * m13 + m42 * m23 + m43 * m33;
 	}
 
+	void copy3x3(const Matrix& mtx)
+	{
+		m11 = mtx.m11;
+		m12 = mtx.m12;
+		m13 = mtx.m13;
+
+		m21 = mtx.m21;
+		m22 = mtx.m22;
+		m23 = mtx.m23;
+
+		m31 = mtx.m31;
+		m32 = mtx.m32;
+		m33 = mtx.m33;
+	}
+
 	void translate(const Vec3& t)
 	{
 		m41 += t.x;
@@ -198,8 +213,16 @@ struct LUMIX_ENGINE_API Matrix
 	}
 
 
-	void getTranslation(Vec3& pos) const;
-	Vec3 getTranslation() const;
+	void getTranslation(Vec3& pos) const
+	{
+		pos.set(m41, m42, m43);
+	}
+
+	Vec3 getTranslation() const
+	{
+		return Vec3(m41, m42, m43);
+	}
+
 	void getRotation(Quat& rot) const;
 	void transpose();
 	Vec3 multiplyPosition(const Vec3& pos) const;

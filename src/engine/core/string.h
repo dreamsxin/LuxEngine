@@ -1,8 +1,8 @@
 #pragma once
 
 
-#include "lumix.h"
-#include "core/default_allocator.h"
+#include "engine/lumix.h"
+#include "engine/core/default_allocator.h"
 
 
 namespace Lumix
@@ -35,13 +35,25 @@ LUMIX_ENGINE_API char* trimmed(char* str);
 LUMIX_ENGINE_API bool startsWith(const char* str, const char* prefix);
 LUMIX_ENGINE_API int stringLength(const char* str);
 LUMIX_ENGINE_API int compareString(const char* lhs, const char* rhs);
+LUMIX_ENGINE_API int compareMemory(const void* lhs, const void* rhs, size_t size);
 LUMIX_ENGINE_API int compareStringN(const char* lhs, const char* rhs, int length);
+LUMIX_ENGINE_API int compareIStringN(const char* lhs, const char* rhs, int length);
 LUMIX_ENGINE_API void copyMemory(void* dest, const void* src, size_t count);
 LUMIX_ENGINE_API void moveMemory(void* dest, const void* src, size_t count);
 LUMIX_ENGINE_API void setMemory(void* ptr, uint8 value, size_t num);
 LUMIX_ENGINE_API const char* findSubstring(const char* str, const char* substr);
 
 
+inline bool isLetter(char c)
+{
+	return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+
+inline bool isUpperCase(char c)
+{
+	return c >= 'A' && c <= 'Z';
+}
 
 
 template <int SIZE> bool copyString(char(&destination)[SIZE], const char* source)
@@ -54,10 +66,61 @@ template <int SIZE> bool catString(char(&destination)[SIZE], const char* source)
 	return catString(destination, SIZE, source);
 }
 
+
+template <int size> struct StaticString
+{
+	StaticString() {
+		data[0] = '\0';
+	}
+
+	explicit StaticString(const char* str) { Lumix::copyString(data, size, str); }
+
+	template <typename... Args> StaticString(const char* str, Args... args)
+	{
+		Lumix::copyString(data, size, str);
+		int tmp[] = {(add(args), 0)...};
+		(void)tmp;
+	}
+
+	template <typename T> StaticString& operator<<(T value)
+	{
+		add(value);
+		return *this;
+	}
+
+	template <int value_size> void add(StaticString<value_size>& value) { Lumix::catString(data, size, value.data); }
+	void add(const char* value) { Lumix::catString(data, size, value); }
+	void add(char* value) { Lumix::catString(data, size, value); }
+
+	void add(float value)
+	{
+		int len = Lumix::stringLength(data);
+		Lumix::toCString(value, data + len, size - len, 3);
+	}
+
+	template <typename T> void add(T value)
+	{
+		int len = Lumix::stringLength(data);
+		Lumix::toCString(value, data + len, size - len);
+	}
+
+	bool operator<(const char* str) const {
+		return Lumix::compareString(data, str) < 0;
+	}
+
+	bool operator==(const char* str) const {
+		return Lumix::compareString(data, str) == 0;
+	}
+
+	operator const char*() const { return data; }
+	char data[size];
+};
+
+
 template <class T> class base_string
 {
 public:
-	base_string(IAllocator& allocator)
+	explicit base_string(IAllocator& allocator)
 		: m_allocator(allocator)
 	{
 		m_cstr = nullptr;
@@ -224,7 +287,7 @@ public:
 		return *this;
 	}
 
-	template <class V> base_string<T>& cat(V value)
+	template <class V> base_string& cat(V value)
 	{
 		char tmp[30];
 		toCString(value, tmp, 30);
@@ -232,7 +295,7 @@ public:
 		return *this;
 	}
 
-	template <> base_string<T>& cat<float>(float value)
+	base_string& cat(float value)
 	{
 		char tmp[40];
 		toCString(value, tmp, 30, 10);
@@ -240,13 +303,13 @@ public:
 		return *this;
 	}
 
-	template <> base_string<T>& cat<char*>(char* value)
+	base_string& cat(char* value)
 	{
 		*this += value;
 		return *this;
 	}
 
-	template <> base_string<T>& cat<const char*>(const char* value)
+	base_string& cat(const char* value)
 	{
 		*this += value;
 		return *this;

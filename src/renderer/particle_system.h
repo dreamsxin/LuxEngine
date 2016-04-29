@@ -1,9 +1,9 @@
 #pragma once
 
 
-#include "lumix.h"
-#include "core/array.h"
-#include "core/vec.h"
+#include "engine/lumix.h"
+#include "engine/core/array.h"
+#include "engine/core/vec.h"
 
 
 namespace Lumix
@@ -15,8 +15,20 @@ class IAllocator;
 class InputBlob;
 class Material;
 class OutputBlob;
+class RenderScene;
 class ResourceManager;
 class Universe;
+class WorldEditor;
+
+
+struct IntInterval
+{
+	int from;
+	int to;
+
+	IntInterval();
+	int getRandom() const;
+};
 
 
 struct Interval
@@ -28,8 +40,8 @@ struct Interval
 	Interval();
 	float getRandom() const;
 
-
 	void check();
+	void checkZero();
 
 	void operator=(const Vec2& value)
 	{
@@ -49,26 +61,45 @@ class LUMIX_RENDERER_API ParticleEmitter
 public:
 	struct LUMIX_RENDERER_API ModuleBase
 	{
-		ModuleBase(ParticleEmitter& emitter);
+		explicit ModuleBase(ParticleEmitter& emitter);
 
 		virtual ~ModuleBase() {}
 		virtual void spawnParticle(int /*index*/) {}
 		virtual void destoryParticle(int /*index*/) {}
 		virtual void update(float /*time_delta*/) {}
 		virtual void serialize(OutputBlob& blob) = 0;
-		virtual void deserialize(InputBlob& blob) = 0;
+		virtual void deserialize(InputBlob& blob, int version) = 0;
 		virtual uint32 getType() const = 0;
+		virtual void drawGizmo(WorldEditor& editor, RenderScene& scene) {}
 
 		ParticleEmitter& m_emitter;
 	};
 
 
-	struct LUMIX_RENDERER_API LinearMovementModule : public ModuleBase
+	struct LUMIX_RENDERER_API SpawnShapeModule : public ModuleBase
 	{
-		LinearMovementModule(ParticleEmitter& emitter);
+		explicit SpawnShapeModule(ParticleEmitter& emitter);
 		void spawnParticle(int index) override;
 		void serialize(OutputBlob& blob) override;
-		void deserialize(InputBlob& blob) override;
+		void deserialize(InputBlob& blob, int version) override;
+		uint32 getType() const override { return s_type; }
+
+		static const uint32 s_type;
+		enum Shape : uint8
+		{
+			SPHERE
+		};
+		float m_radius;
+		Shape m_shape;
+	};
+
+
+	struct LUMIX_RENDERER_API LinearMovementModule : public ModuleBase
+	{
+		explicit LinearMovementModule(ParticleEmitter& emitter);
+		void spawnParticle(int index) override;
+		void serialize(OutputBlob& blob) override;
+		void deserialize(InputBlob& blob, int version) override;
 		uint32 getType() const override { return s_type; }
 
 		static const uint32 s_type;
@@ -78,40 +109,89 @@ public:
 	};
 
 
-	struct LUMIX_RENDERER_API AlphaModule : public ModuleBase
+	struct LUMIX_RENDERER_API PlaneModule : public ModuleBase
 	{
-		AlphaModule(ParticleEmitter& emitter);
+		explicit PlaneModule(ParticleEmitter& emitter);
+		void serialize(OutputBlob& blob) override;
+		void deserialize(InputBlob& blob, int version) override;
 		void update(float time_delta) override;
-		void serialize(OutputBlob&) override {}
-		void deserialize(InputBlob&) override {}
+		uint32 getType() const override { return s_type; }
+		void drawGizmo(WorldEditor& editor, RenderScene& scene) override;
+
+		static const uint32 s_type;
+		Entity m_entities[8];
+		float m_bounce;
+		int m_count;
+	};
+
+
+	struct LUMIX_RENDERER_API AttractorModule : public ModuleBase
+	{
+		explicit AttractorModule(ParticleEmitter& emitter);
+		void serialize(OutputBlob& blob) override;
+		void deserialize(InputBlob& blob, int version) override;
+		void update(float time_delta) override;
+		uint32 getType() const override { return s_type; }
+		void drawGizmo(WorldEditor& editor, RenderScene& scene) override;
+
+		static const uint32 s_type;
+		Entity m_entities[8];
+		float m_force;
+		int m_count;
+	};
+
+
+	struct LUMIX_RENDERER_API ForceModule : public ModuleBase
+	{
+		explicit ForceModule(ParticleEmitter& emitter);
+		void serialize(OutputBlob& blob) override;
+		void deserialize(InputBlob& blob, int version) override;
+		void update(float time_delta) override;
 		uint32 getType() const override { return s_type; }
 
 		static const uint32 s_type;
-		
-		Array<float> m_values;
+		Vec3 m_acceleration;
+	};
+
+
+	struct LUMIX_RENDERER_API AlphaModule : public ModuleBase
+	{
+		explicit AlphaModule(ParticleEmitter& emitter);
+		void update(float time_delta) override;
+		void serialize(OutputBlob&) override;
+		void deserialize(InputBlob&, int) override;
+		uint32 getType() const override { return s_type; }
+		void sample();
+
+		static const uint32 s_type;
+
+		Array<Vec2> m_values;
+		Array<float> m_sampled;
 	};
 
 
 	struct LUMIX_RENDERER_API SizeModule : public ModuleBase
 	{
-		SizeModule(ParticleEmitter& emitter);
+		explicit SizeModule(ParticleEmitter& emitter);
 		void update(float time_delta) override;
-		void serialize(OutputBlob&) override {}
-		void deserialize(InputBlob&) override {}
+		void serialize(OutputBlob&) override;
+		void deserialize(InputBlob&, int) override;
 		uint32 getType() const override { return s_type; }
+		void sample();
 
 		static const uint32 s_type;
 
-		Array<float> m_values;
+		Array<Vec2> m_values;
+		Array<float> m_sampled;
 	};
 
 
 	struct LUMIX_RENDERER_API RandomRotationModule : public ModuleBase
 	{
-		RandomRotationModule(ParticleEmitter& emitter);
+		explicit RandomRotationModule(ParticleEmitter& emitter);
 		void spawnParticle(int index) override;
 		void serialize(OutputBlob&) override {}
-		void deserialize(InputBlob&) override {}
+		void deserialize(InputBlob&, int) override {}
 		uint32 getType() const override { return s_type; }
 
 		static const uint32 s_type;
@@ -122,8 +202,10 @@ public:
 	ParticleEmitter(Entity entity, Universe& universe, IAllocator& allocator);
 	~ParticleEmitter();
 
+	void reset();
+	void drawGizmo(WorldEditor& editor, RenderScene& scene);
 	void serialize(OutputBlob& blob);
-	void deserialize(InputBlob& blob, ResourceManager& manager);
+	void deserialize(InputBlob& blob, ResourceManager& manager, bool has_version);
 	void update(float time_delta);
 	Material* getMaterial() const { return m_material; }
 	void setMaterial(Material* material);
@@ -143,6 +225,8 @@ public:
 	Interval m_spawn_period;
 	Interval m_initial_life;
 	Interval m_initial_size;
+	IntInterval m_spawn_count;
+
 	Array<ModuleBase*> m_modules;
 	Entity m_entity;
 

@@ -1,10 +1,8 @@
-#include "debug/debug.h"
-#include "core/mt/atomic.h"
-#include "core/string.h"
-#include "core/system.h"
-#include "debug/debug.h"
-#include "core/pc/simple_win.h"
-#include <Windows.h>
+#include "engine/debug/debug.h"
+#include "engine/core/mt/atomic.h"
+#include "engine/core/string.h"
+#include "engine/core/system.h"
+#include <windows.h>
 #include <DbgHelp.h>
 #include <mapi.h>
 #include <cstdlib>
@@ -79,6 +77,13 @@ StackTree::~StackTree()
 }
 
 
+void StackTree::refreshModuleList()
+{
+	ASSERT(s_instances > 0);
+	SymRefreshModuleList(GetCurrentProcess());
+}
+
+
 int StackTree::getPath(StackNode* node, StackNode** output, int max_size)
 {
 	int i = 0;
@@ -101,9 +106,8 @@ StackNode* StackTree::getParent(StackNode* node)
 bool StackTree::getFunction(StackNode* node, char* out, int max_size, int* line)
 {
 	HANDLE process = GetCurrentProcess();
-	uint8 symbol_mem[sizeof(SYMBOL_INFO) + 256 * sizeof(char)];
+	uint8 symbol_mem[sizeof(SYMBOL_INFO) + 256 * sizeof(char)] = {};
 	SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_mem);
-	memset(symbol_mem, 0, sizeof(symbol_mem));
 	symbol->MaxNameLen = 255;
 	symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
 	BOOL success = SymFromAddr(process, (DWORD64)(node->m_instruction), 0, symbol);
@@ -379,6 +383,24 @@ void* Allocator::reallocate(void* user_ptr, size_t size)
 }
 
 
+void* Allocator::allocate_aligned(size_t size, size_t align)
+{
+	return m_source.allocate_aligned(size, align);
+}
+
+
+void Allocator::deallocate_aligned(void* ptr)
+{
+	m_source.deallocate_aligned(ptr);
+}
+
+
+void* Allocator::reallocate_aligned(void* ptr, size_t size, size_t align)
+{
+	return m_source.reallocate_aligned(ptr, size, align);
+}
+
+
 void* Allocator::allocate(size_t size)
 {
 #ifndef _DEBUG
@@ -589,55 +611,77 @@ static LONG WINAPI unhandledExceptionHandler(LPEXCEPTION_POINTERS info)
 {
 	if (!g_is_crash_reporting_enabled) return EXCEPTION_CONTINUE_SEARCH;
 
-	char message[4096];
-	getStack(*info->ContextRecord, message, sizeof(message));
-	messageBox(message);
+	struct CrashInfo
+	{
+		LPEXCEPTION_POINTERS info;
+		DWORD thread_id;
+	};
 
-	char minidump_path[Lumix::MAX_PATH_LENGTH];
-	GetCurrentDirectory(sizeof(minidump_path), minidump_path);
-	Lumix::catString(minidump_path, "\\minidump.dmp");
+	auto dumper = [](void* data) -> DWORD {
+		auto info = ((CrashInfo*)data)->info;
+		char message[4096];
+		if(info)
+		{
+			getStack(*info->ContextRecord, message, sizeof(message));
+			messageBox(message);
+		}
+		else
+		{
+			message[0] = '\0';
+		}
 
-	HANDLE process = GetCurrentProcess();
-	DWORD process_id = GetProcessId(process);
-	HANDLE file = CreateFile(
-		minidump_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	MINIDUMP_TYPE minidump_type = (MINIDUMP_TYPE)(
-		/*MiniDumpWithFullMemory | MiniDumpWithFullMemoryInfo |*/ MiniDumpFilterMemory |
-		MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
+		char minidump_path[Lumix::MAX_PATH_LENGTH];
+		GetCurrentDirectory(sizeof(minidump_path), minidump_path);
+		Lumix::catString(minidump_path, "\\minidump.dmp");
 
-	MINIDUMP_EXCEPTION_INFORMATION minidump_exception_info;
-	minidump_exception_info.ThreadId = GetCurrentThreadId();
-	minidump_exception_info.ExceptionPointers = info;
-	minidump_exception_info.ClientPointers = FALSE;
+		HANDLE process = GetCurrentProcess();
+		DWORD process_id = GetProcessId(process);
+		HANDLE file = CreateFile(
+			minidump_path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		MINIDUMP_TYPE minidump_type = (MINIDUMP_TYPE)(
+			MiniDumpWithFullMemoryInfo | MiniDumpFilterMemory | MiniDumpWithHandleData |
+			MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
 
-	MiniDumpWriteDump(process,
-		process_id,
-		file,
-		minidump_type,
-		info ? &minidump_exception_info : nullptr,
-		nullptr,
-		nullptr);
-	CloseHandle(file);
+		MINIDUMP_EXCEPTION_INFORMATION minidump_exception_info;
+		minidump_exception_info.ThreadId = ((CrashInfo*)data)->thread_id;
+		minidump_exception_info.ExceptionPointers = info;
+		minidump_exception_info.ClientPointers = FALSE;
 
-	SendFile("Lumix Studio crash",
-		"SMTP:mikulas.florek@gamedev.sk",
-		"Lumix Studio",
-		"Lumix Studio crashed, minidump attached",
-		minidump_path);
+		MiniDumpWriteDump(process,
+			process_id,
+			file,
+			minidump_type,
+			info ? &minidump_exception_info : nullptr,
+			nullptr,
+			nullptr);
+		CloseHandle(file);
 
-	minidump_type = (MINIDUMP_TYPE)(MiniDumpWithFullMemory | MiniDumpWithFullMemoryInfo |
-									MiniDumpFilterMemory | MiniDumpWithHandleData |
-									MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
-	file = CreateFile(
-		"fulldump.dmp", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-	MiniDumpWriteDump(process,
-		process_id,
-		file,
-		minidump_type,
-		info ? &minidump_exception_info : nullptr,
-		nullptr,
-		nullptr);
-	CloseHandle(file);
+		SendFile("Lumix Studio crash",
+			"SMTP:mikulas.florek@gamedev.sk",
+			"Lumix Studio",
+			message,
+			minidump_path);
+
+		minidump_type = (MINIDUMP_TYPE)(MiniDumpWithFullMemory | MiniDumpWithFullMemoryInfo |
+			MiniDumpFilterMemory | MiniDumpWithHandleData |
+			MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules);
+		file = CreateFile(
+			"fulldump.dmp", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		MiniDumpWriteDump(process,
+			process_id,
+			file,
+			minidump_type,
+			info ? &minidump_exception_info : nullptr,
+			nullptr,
+			nullptr);
+		CloseHandle(file);
+		return 0;
+	};
+
+	DWORD thread_id;
+	CrashInfo crash_info = { info, GetCurrentThreadId() };
+	auto handle = CreateThread(0, 0x8000, dumper, &crash_info, 0, &thread_id);
+	WaitForSingleObject(handle, INFINITE);
 
 	return EXCEPTION_CONTINUE_SEARCH;
 }

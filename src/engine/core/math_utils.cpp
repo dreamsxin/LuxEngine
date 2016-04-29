@@ -1,6 +1,7 @@
-#include "core/math_utils.h"
-#include "core/vec.h"
+#include "engine/core/math_utils.h"
+#include "engine/core/vec.h"
 #include <cmath>
+#include <random>
 
 
 namespace Lumix
@@ -63,10 +64,10 @@ bool getRayAABBIntersection(const Vec3& origin,
 	float t5 = (min.z - origin.z) * dirfrac.z;
 	float t6 = (max.z - origin.z) * dirfrac.z;
 
-	float tmin = Math::maxValue(
-		Math::maxValue(Math::minValue(t1, t2), Math::minValue(t3, t4)), Math::minValue(t5, t6));
-	float tmax = Math::minValue(
-		Math::minValue(Math::maxValue(t1, t2), Math::maxValue(t3, t4)), Math::maxValue(t5, t6));
+	float tmin = Math::maximum(
+		Math::maximum(Math::minimum(t1, t2), Math::minimum(t3, t4)), Math::minimum(t5, t6));
+	float tmax = Math::minimum(
+		Math::minimum(Math::maximum(t1, t2), Math::maximum(t3, t4)), Math::maximum(t5, t6));
 
 	if (tmax < 0)
 	{
@@ -95,7 +96,7 @@ float getLineSegmentDistance(const Vec3& origin, const Vec3& dir, const Vec3& a,
 	float dot5 = dotProduct(dir, dir);
 
 	float denom = dot4 * dot5 - dot2 * dot2;
-	if (fabsf(denom) < 1e-5f)
+	if (abs(denom) < 1e-5f)
 	{
 		Vec3 X = origin + dir * dotProduct(b - origin, dir);
 		return (b - X).length();
@@ -158,6 +159,48 @@ bool getRayTriangleIntersection(const Vec3& origin,
 
 	if (out_t) *out_t = t;
 	return true;
+}
+
+
+static std::mt19937& getRandomGenerator()
+{
+	static std::random_device seed;
+	static std::mt19937 gen(seed());
+
+	return gen;
+}
+
+
+float pow(float base, float exponent)
+{
+	return ::pow(base, exponent);
+}
+
+
+uint32 rand()
+{
+	return getRandomGenerator()();
+}
+
+
+uint32 rand(uint32 from, uint32 to)
+{
+	std::uniform_int_distribution<> dist(from, to);
+	return dist(getRandomGenerator());
+}
+
+
+float randFloat()
+{
+	std::uniform_real_distribution<float> dist;
+	return dist(getRandomGenerator());
+}
+
+
+float randFloat(float from, float to)
+{
+	std::uniform_real_distribution<float> dist(from, to);
+	return dist(getRandomGenerator());
 }
 
 

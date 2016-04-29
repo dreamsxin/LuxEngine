@@ -1,11 +1,18 @@
 #pragma once
 
 
-#include "lumix.h"
+#include "engine/lumix.h"
 
 
 namespace Lumix
 {
+
+
+struct Int2
+{
+	int x;
+	int y;
+};
 
 
 struct LUMIX_ENGINE_API Vec2
@@ -16,6 +23,19 @@ struct LUMIX_ENGINE_API Vec2
 		, y(b)
 	{
 	}
+
+	void set(float a, float b)
+	{
+		x = a;
+		y = b;
+	}
+
+
+	Vec2 operator *(float f) const { return Vec2(x * f, y * f); }
+	Vec2 operator +(const Vec2& v) const { return Vec2(x + v.x, y + v.y); }
+	Vec2 operator -(const Vec2& v) const { return Vec2(x - v.x, y - v.y); }
+	Vec2 normalized() const { return *this * (1 / length()); }
+	float length() const;
 
 	float x, y;
 };
@@ -190,6 +210,7 @@ struct LUMIX_ENGINE_API Vec4
 		x *= rhs;
 		y *= rhs;
 		z *= rhs;
+		w *= rhs;
 		this->x = x;
 		this->y = y;
 		this->z = z;
@@ -197,6 +218,14 @@ struct LUMIX_ENGINE_API Vec4
 	}
 
 	void normalize();
+
+	void set(const Vec3& v, float w)
+	{
+		this->x = v.x;
+		this->y = v.y;
+		this->z = v.z;
+		this->w = w;
+	}
 
 	void set(float x, float y, float z, float w)
 	{

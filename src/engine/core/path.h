@@ -1,15 +1,14 @@
 #pragma once
 
-#include "core/associative_array.h"
-#include "core/base_proxy_allocator.h"
-#include "core/default_allocator.h"
-#include "core/mt/sync.h"
-#include "core/string.h"
+#include "engine/core/associative_array.h"
+#include "engine/core/mt/sync.h"
+
 
 namespace Lumix
 {
 
 
+class IAllocator;
 class InputBlob;
 class OutputBlob;
 
@@ -28,7 +27,7 @@ class LUMIX_ENGINE_API PathManager
 	friend class Path;
 
 public:
-	PathManager();
+	explicit PathManager(Lumix::IAllocator& allocator);
 	~PathManager();
 
 	void serialize(OutputBlob& serializer);
@@ -44,15 +43,11 @@ private:
 	void decrementRefCount(PathInternal* path);
 
 private:
-	DefaultAllocator m_src_allocator;
-	BaseProxyAllocator m_allocator;
+	IAllocator& m_allocator;
 	AssociativeArray<uint32, PathInternal*> m_paths;
 	MT::SpinMutex m_mutex;
 	PathInternal* m_empty_path;
 };
-
-
-extern PathManager LUMIX_ENGINE_API g_path_manager;
 
 
 class LUMIX_ENGINE_API Path
@@ -71,12 +66,10 @@ public:
 
 	~Path();
 
-	operator const char*() const { return m_data->m_path; }
-	operator uint32() const { return m_data->m_id; }
 	uint32 getHash() const { return m_data->m_id; }
-
 	const char* c_str() const { return m_data->m_path; }
-	int length() const { return stringLength(m_data->m_path); }
+
+	int length() const;
 	bool isValid() const { return m_data->m_path[0] != '\0'; }
 
 private:

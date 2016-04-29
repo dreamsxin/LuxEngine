@@ -1,12 +1,10 @@
 #pragma once
 
 
-#include "core/array.h"
-#include "core/associative_array.h"
-#include "core/matrix.h"
-#include "core/resource.h"
-#include "core/vec.h"
-#include "renderer/render_scene.h"
+#include "engine/core/array.h"
+#include "engine/core/associative_array.h"
+#include "engine/core/resource.h"
+#include "engine/core/vec.h"
 #include <bgfx/bgfx.h>
 
 
@@ -14,15 +12,23 @@ namespace Lumix
 {
 
 
+struct AABB;
+class Frustum;
+struct GrassInfo;
+class IAllocator;
 class LIFOAllocator;
 class Material;
-class Mesh;
+struct Matrix;
+struct Mesh;
+class Model;
 class OutputBlob;
-class PipelineInstance;
+struct RayCastModelHit;
 class Renderer;
 class RenderScene;
 struct TerrainQuad;
+struct TerrainInfo;
 class Texture;
+class Universe;
 
 
 class Terrain
@@ -31,21 +37,22 @@ class Terrain
 		class GrassType
 		{
 			public:
-				GrassType(Terrain& terrain);
+				explicit GrassType(Terrain& terrain);
 				~GrassType();
 
 				void grassLoaded(Resource::State, Resource::State);
-	
+
 				Model* m_grass_model;
 				Terrain& m_terrain;
 				int32 m_ground;
 				int32 m_density;
+				float m_distance;
 		};
-		
+
 		class GrassPatch
 		{
 			public:
-				GrassPatch(IAllocator& allocator)
+				explicit GrassPatch(IAllocator& allocator)
 					: m_matrices(allocator)
 				{ }
 
@@ -56,7 +63,7 @@ class Terrain
 		class GrassQuad
 		{
 			public:
-				GrassQuad(IAllocator& allocator)
+				explicit GrassQuad(IAllocator& allocator)
 					: m_patches(allocator)
 				{}
 
@@ -78,24 +85,27 @@ class Terrain
 		Entity getEntity() const { return m_entity; }
 		float getRootSize() const;
 		Vec3 getNormal(float x, float z);
-		float getHeight(float x, float z);
+		float getHeight(float x, float z) const;
 		float getXZScale() const { return m_scale.x; }
 		float getYScale() const { return m_scale.y; }
 		Mesh* getMesh() { return m_mesh; }
 		Path getGrassTypePath(int index);
 		Vec3 getScale() const { return m_scale; }
-		void getSize(float* width, float* height) const { ASSERT(width); ASSERT(height); *width = m_width * m_scale.x; *height = m_height * m_scale.z; }
-		int getGrassTypeGround(int index);
-		int getGrassTypeDensity(int index);
+		Vec2 getSize() const { return Vec2(m_width * m_scale.x, m_height * m_scale.z); }
+		AABB getAABB() const;
+		int getWidth() const { return m_width; }
+		int getHeight() const { return m_height; }
+		int getGrassTypeGround(int index) const;
+		int getGrassTypeDensity(int index) const;
+		float getGrassTypeDistance(int index) const;
 		int getGrassTypeCount() const { return m_grass_types.size(); }
-		int getGrassDistance() const { return m_grass_distance; }
 
 		void setXZScale(float scale) { m_scale.x = scale; m_scale.z = scale; }
 		void setYScale(float scale) { m_scale.y = scale; }
 		void setGrassTypePath(int index, const Path& path);
 		void setGrassTypeGround(int index, int ground);
 		void setGrassTypeDensity(int index, int density);
-		void setGrassDistance(int value) { m_grass_distance = value; forceGrassUpdate(); }
+		void setGrassTypeDistance(int index, float value);
 		void setMaterial(Material* material);
 
 		void getInfos(Array<const TerrainInfo*>& infos, const Vec3& camera_pos, LIFOAllocator& allocator);
@@ -103,7 +113,7 @@ class Terrain
 
 		RayCastModelHit castRay(const Vec3& origin, const Vec3& dir);
 		void serialize(OutputBlob& serializer);
-		void deserialize(InputBlob& serializer, Universe& universe, RenderScene& scene, int index);
+		void deserialize(InputBlob& serializer, Universe& universe, RenderScene& scene, int index, int version);
 
 		void addGrassType(int index);
 		void removeGrassType(int index);
@@ -112,7 +122,7 @@ class Terrain
 	private: 
 		Array<Terrain::GrassQuad*>& getQuads(ComponentIndex camera);
 		TerrainQuad* generateQuadTree(float size);
-		float getHeight(int x, int z);
+		float getHeight(int x, int z) const;
 		void updateGrass(ComponentIndex camera);
 		void generateGrassTypeQuad(GrassPatch& patch,
 								   const Matrix& terrain_matrix,

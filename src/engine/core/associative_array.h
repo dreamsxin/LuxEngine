@@ -1,7 +1,7 @@
 #pragma once
 
 
-#include "core/array.h"
+#include "engine/core/array.h"
 
 
 namespace Lumix
@@ -11,7 +11,7 @@ namespace Lumix
 	class SortedArray
 	{
 		public:
-			SortedArray(IAllocator& allocator)
+			explicit SortedArray(IAllocator& allocator)
 				: m_data(allocator)
 			{}
 
@@ -108,7 +108,7 @@ namespace Lumix
 	class AssociativeArray
 	{
 		public:
-			AssociativeArray(IAllocator& allocator)
+			explicit AssociativeArray(IAllocator& allocator)
 				: m_data(allocator)
 			{}
 

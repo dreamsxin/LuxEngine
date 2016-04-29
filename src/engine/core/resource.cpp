@@ -1,9 +1,9 @@
-#include "lumix.h"
-#include "core/resource.h"
-#include "core/fs/file_system.h"
-#include "core/log.h"
-#include "core/path.h"
-#include "core/resource_manager.h"
+#include "engine/lumix.h"
+#include "engine/core/resource.h"
+#include "engine/core/fs/file_system.h"
+#include "engine/core/log.h"
+#include "engine/core/path.h"
+#include "engine/core/resource_manager.h"
 
 namespace Lumix
 {
@@ -66,7 +66,7 @@ void Resource::fileLoaded(FS::IFile& file, bool success)
 
 	if (!success)
 	{
-		g_log_error.log("resource") << "Could not open " << getPath().c_str();
+		g_log_error.log("Core") << "Could not open " << getPath().c_str();
 		--m_empty_dep_count;
 		++m_failed_dep_count;
 		checkState();
@@ -87,11 +87,10 @@ void Resource::fileLoaded(FS::IFile& file, bool success)
 
 void Resource::doUnload()
 {
-	ASSERT(m_desired_state != State::EMPTY || m_current_state != State::EMPTY);
 	m_desired_state = State::EMPTY;
 	unload();
 	ASSERT(m_empty_dep_count <= 1);
-	
+
 	m_size = 0;
 	m_empty_dep_count = 1;
 	m_failed_dep_count = 0;

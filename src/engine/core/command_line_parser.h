@@ -1,7 +1,7 @@
 #pragma once
 
 
-#include "lumix.h"
+#include "engine/lumix.h"
 
 
 namespace Lumix
@@ -49,23 +49,16 @@ public:
 		ASSERT(*m_current);
 		ASSERT(max_size > 0);
 		const char* rhs = m_current;
-		char* end = output + max_size;
+		char* end = output + max_size - 1;
 		char* lhs = output;
 		if (*m_current == '"')
 		{
-			*lhs = '"';
 			++rhs;
-			++lhs;
 			while (*rhs && *rhs != '"' && lhs != end)
 			{
 				*lhs = *rhs;
 				++lhs;
 				++rhs;
-			}
-			if (lhs != end)
-			{
-				*lhs = '"';
-				++lhs;
 			}
 			*lhs = 0;
 			return;

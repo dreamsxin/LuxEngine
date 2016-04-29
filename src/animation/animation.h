@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/resource.h"
-#include "core/resource_manager_base.h"
+#include "engine/core/resource.h"
+#include "engine/core/resource_manager_base.h"
 
 namespace Lumix
 {
@@ -21,7 +21,7 @@ struct Vec3;
 class LUMIX_ANIMATION_API AnimationManager : public ResourceManagerBase
 {
 public:
-	AnimationManager(IAllocator& allocator) 
+	explicit AnimationManager(IAllocator& allocator) 
 		: ResourceManagerBase(allocator)
 		, m_allocator(allocator)
 	{}

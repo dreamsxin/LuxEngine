@@ -1,15 +1,12 @@
 #include "renderer/material.h"
-#include "core/crc32.h"
-#include "core/fs/file_system.h"
-#include "core/fs/ifile.h"
-#include "core/json_serializer.h"
-#include "core/log.h"
-#include "core/path_utils.h"
-#include "core/profiler.h"
-#include "core/resource_manager.h"
-#include "core/resource_manager_base.h"
-#include "core/timer.h"
-#include "renderer/frame_buffer.h"
+#include "engine/core/crc32.h"
+#include "engine/core/fs/file_system.h"
+#include "engine/core/json_serializer.h"
+#include "engine/core/log.h"
+#include "engine/core/path_utils.h"
+#include "engine/core/profiler.h"
+#include "engine/core/resource_manager.h"
+#include "engine/core/resource_manager_base.h"
 #include "renderer/material_manager.h"
 #include "renderer/pipeline.h"
 #include "renderer/renderer.h"
@@ -22,8 +19,12 @@ namespace Lumix
 
 
 static const uint32 SHADOWMAP_HASH = crc32("shadowmap");
-int Material::s_alpha_cutout_define_idx = -1;
-int Material::s_shadow_receiver_define_idx = -1;
+static const float DEFAULT_ALPHA_REF_VALUE = 0.3f;
+static struct CustomFlags
+{
+	char flags[32][32];
+	int count;
+} s_custom_flags = {};
 
 
 Material::Material(const Path& path, ResourceManager& resource_manager, IAllocator& allocator)
@@ -33,24 +34,21 @@ Material::Material(const Path& path, ResourceManager& resource_manager, IAllocat
 	, m_allocator(allocator)
 	, m_texture_count(0)
 	, m_render_states(0)
-	, m_specular(1, 1, 1)
+	, m_color(1, 1, 1)
 	, m_shininess(4)
 	, m_shader_instance(nullptr)
-	, m_shader_mask(0)
+	, m_define_mask(0)
+	, m_command_buffer(nullptr)
+	, m_layer_count(1)
+	, m_custom_flags(0)
 {
-	auto* manager = resource_manager.get(ResourceManager::MATERIAL);
-	auto* mat_manager = static_cast<MaterialManager*>(manager);
-
-	s_alpha_cutout_define_idx = mat_manager->getRenderer().getShaderDefineIdx("ALPHA_CUTOUT");
-	s_shadow_receiver_define_idx = mat_manager->getRenderer().getShaderDefineIdx("SHADOW_RECEIVER");
-
-	enableZTest(true);
-	enableBackfaceCulling(true);
-	enableShadowReceiving(true);
+	setAlphaRef(DEFAULT_ALPHA_REF_VALUE);
 	for (int i = 0; i < MAX_TEXTURE_COUNT; ++i)
 	{
 		m_textures[i] = nullptr;
 	}
+
+	setShader(nullptr);
 }
 
 
@@ -60,107 +58,68 @@ Material::~Material()
 }
 
 
-void Material::setUserDefine(int define_idx)
+const char* Material::getCustomFlagName(int index)
 {
-	if (!isReady()) return;
-	if (!m_shader) return;
+	return s_custom_flags.flags[index];
+}
 
-	uint32 old_mask = m_shader_mask;
-	m_shader_mask |= m_shader->getDefineMask(define_idx);
 
-	if (old_mask != m_shader_mask)
+uint32 Material::getCustomFlag(const char* flag_name)
+{
+	for (int i = 0; i < s_custom_flags.count; ++i)
 	{
-		m_shader_instance = &m_shader->getInstance(m_shader_mask);
+		if (compareString(s_custom_flags.flags[i], flag_name) == 0) return 1 << i;
 	}
-}
-
-
-void Material::unsetUserDefine(int define_idx)
-{
-	if (!isReady()) return;
-	if (!m_shader) return;
-
-	uint32 old_mask = m_shader_mask;
-	m_shader_mask &= ~m_shader->getDefineMask(define_idx);
-
-	if (old_mask != m_shader_mask)
+	if (s_custom_flags.count >= lengthOf(s_custom_flags.flags))
 	{
-		m_shader_instance = &m_shader->getInstance(m_shader_mask);
+		ASSERT(false);
+		return 0;
 	}
+	copyString(s_custom_flags.flags[s_custom_flags.count], flag_name);
+	++s_custom_flags.count;
+	return 1 << (s_custom_flags.count - 1);
 }
 
 
-bool Material::isAlphaCutout() const
+bool Material::isDefined(uint8 define_idx) const
 {
-	if (!isReady()) return false;
-	if (!m_shader)	return false;
-
-	return (m_shader_mask & m_shader->getDefineMask(s_alpha_cutout_define_idx)) != 0;
+	return (m_define_mask & (1 << define_idx)) != 0;
 }
 
 
-bool Material::hasAlphaCutoutDefine() const
+bool Material::hasDefine(uint8 define_idx) const
 {
-	return m_shader->getDefineMask(s_alpha_cutout_define_idx) != 0;
+	return m_shader->hasDefine(define_idx) != 0;
 }
 
 
-void Material::enableAlphaCutout(bool enable)
+void Material::setDefine(uint8 define_idx, bool enabled)
 {
-	if (!isReady()) return;
-	if (!m_shader)	return;
-
-	uint32 mask = m_shader->getDefineMask(s_alpha_cutout_define_idx);
-	if (enable)
+	uint32 old_mask = m_define_mask;
+	if (enabled)
 	{
-		m_shader_mask |= mask;
+		m_define_mask |= 1 << define_idx;
 	}
 	else
 	{
-		m_shader_mask &= ~mask;
+		m_define_mask &= ~(1 << define_idx);
 	}
 
-	m_shader_instance = &m_shader->getInstance(m_shader_mask);
-}
-
-
-bool Material::isShadowReceiver() const
-{
-	if (!isReady()) return false;
-	if (!m_shader)	return false;
-
-	return (m_shader_mask & m_shader->getDefineMask(s_shadow_receiver_define_idx)) != 0;
-}
-
-
-bool Material::hasShadowReceivingDefine() const
-{
-	return m_shader->getDefineMask(s_shadow_receiver_define_idx) != 0;
-}
-
-
-void Material::enableShadowReceiving(bool enable)
-{
 	if (!isReady()) return;
-	if (!m_shader)	return;
+	if (!m_shader) return;
 
-	uint32 mask = m_shader->getDefineMask(s_shadow_receiver_define_idx);
-	if (enable)
+	if (old_mask != m_define_mask)
 	{
-		m_shader_mask |= mask;
+		m_shader_instance = &m_shader->getInstance(m_define_mask);
 	}
-	else
-	{
-		m_shader_mask &= ~mask;
-	}
-
-	m_shader_instance = &m_shader->getInstance(m_shader_mask);
 }
 
 
 void Material::unload(void)
 {
-	clearUniforms();
+	m_allocator.deallocate(m_command_buffer);
+	m_command_buffer = nullptr;
+	m_uniforms.clear();
 	setShader(nullptr);
 
 	ResourceManagerBase* texture_manager = m_resource_manager.get(ResourceManager::TEXTURE);
@@ -178,8 +137,15 @@ void Material::unload(void)
 
 bool Material::save(JsonSerializer& serializer)
 {
+	if(!isReady()) return false;
+	if(!m_shader) return false;
+
+	auto* manager = getResourceManager().get(ResourceManager::MATERIAL);
+	auto& renderer = static_cast<MaterialManager*>(manager)->getRenderer();
+
 	serializer.beginObject();
-	serializer.serialize("shader", m_shader ? m_shader->getPath().c_str() : "");
+	serializer.serialize("shader", m_shader ? m_shader->getPath() : Path(""));
+	if (m_layer_count != 1)serializer.serialize("layer_count", m_layer_count);
 	for (int i = 0; i < m_texture_count; ++i)
 	{
 		char path[MAX_PATH_LENGTH];
@@ -199,6 +165,7 @@ bool Material::save(JsonSerializer& serializer)
 		serializer.beginObject("texture");
 		serializer.serialize("source", path);
 		if (atlas_size > 0) serializer.serialize("atlas_size", atlas_size);
+		if (flags & BGFX_TEXTURE_SRGB) serializer.serialize("srgb", true);
 		if (flags & BGFX_TEXTURE_U_CLAMP) serializer.serialize("u_clamp", true);
 		if (flags & BGFX_TEXTURE_V_CLAMP) serializer.serialize("v_clamp", true);
 		if (flags & BGFX_TEXTURE_W_CLAMP) serializer.serialize("w_clamp", true);
@@ -209,27 +176,61 @@ bool Material::save(JsonSerializer& serializer)
 		if (m_textures[i] && m_textures[i]->getData()) serializer.serialize("keep_data", true);
 		serializer.endObject();
 	}
+
+	if (m_custom_flags != 0)
+	{
+		serializer.beginArray("custom_flags");
+		for (int i = 0; i < 32; ++i)
+		{
+			if (m_custom_flags & (1 << i)) serializer.serializeArrayItem(s_custom_flags.flags[i]);
+		}
+		serializer.endArray();
+	}
+
+	serializer.beginArray("defines");
+	for (int i = 0; i < sizeof(m_define_mask) * 8; ++i)
+	{
+		if (m_define_mask & (1 << i)) serializer.serializeArrayItem(renderer.getShaderDefine(i));
+	}
+	serializer.endArray();
+
 	serializer.beginArray("uniforms");
-	for (int i = 0; i < m_uniforms.size(); ++i)
+	for (int i = 0; i < m_shader->getUniformCount(); ++i)
 	{
 		serializer.beginObject();
-		serializer.serialize("name", m_uniforms[i].m_name);
-		switch (m_uniforms[i].m_type)
+		const auto& uniform = m_shader->getUniform(i);
+
+		serializer.serialize("name", uniform.name);
+		switch (uniform.type)
 		{
-			case Uniform::FLOAT:
-				serializer.serialize("float_value", m_uniforms[i].m_float);
+			case Shader::Uniform::FLOAT:
+				serializer.serialize("float_value", m_uniforms[i].float_value);
 				break;
-			case Uniform::TIME:
-				serializer.serialize("time", m_uniforms[i].m_float);
+			case Shader::Uniform::COLOR:
+				serializer.beginArray("color");
+					serializer.serializeArrayItem(m_uniforms[i].vec3[0]);
+					serializer.serializeArrayItem(m_uniforms[i].vec3[1]);
+					serializer.serializeArrayItem(m_uniforms[i].vec3[2]);
+				serializer.endArray();
 				break;
-			case Uniform::INT:
-				serializer.serialize("int_value", m_uniforms[i].m_int);
+			case Shader::Uniform::VEC3:
+				serializer.beginArray("vec3");
+					serializer.serializeArrayItem(m_uniforms[i].vec3[0]);
+					serializer.serializeArrayItem(m_uniforms[i].vec3[1]);
+					serializer.serializeArrayItem(m_uniforms[i].vec3[2]);
+				serializer.endArray();
 				break;
-			case Uniform::MATRIX:
+			case Shader::Uniform::TIME:
+				serializer.serialize("time", 0);
+				break;
+			case Shader::Uniform::INT:
+				serializer.serialize("int_value", m_uniforms[i].int_value);
+				break;
+			case Shader::Uniform::MATRIX4:
 				serializer.beginArray("matrix_value");
 				for (int j = 0; j < 16; ++j)
 				{
-					serializer.serializeArrayItem(m_uniforms[i].m_matrix[j]);
+					serializer.serializeArrayItem(m_uniforms[i].matrix[j]);
 				}
 				serializer.endArray();
 				break;
@@ -240,85 +241,109 @@ bool Material::save(JsonSerializer& serializer)
 		serializer.endObject();
 	}
 	serializer.endArray();
-	serializer.serialize("backface_culling", isBackfaceCulling());
-	serializer.serialize("alpha_cutout", isAlphaCutout());
-	serializer.serialize("shadow_receiver", isShadowReceiver());
 	serializer.serialize("shininess", m_shininess);
-	serializer.beginArray("specular");
-	serializer.serializeArrayItem(m_specular.x);
-	serializer.serializeArrayItem(m_specular.y);
-	serializer.serializeArrayItem(m_specular.z);
+	serializer.serialize("alpha_ref", m_alpha_ref);
+	serializer.beginArray("color");
+		serializer.serializeArrayItem(m_color.x);
+		serializer.serializeArrayItem(m_color.y);
+		serializer.serializeArrayItem(m_color.z);
 	serializer.endArray();
-	serializer.serialize("z_test", isZTest());
 	serializer.endObject();
 	return true;
 }
 
 
-void Material::clearUniforms()
+void Material::deserializeCustomFlags(JsonSerializer& serializer)
 {
-	for (auto& uniform : m_uniforms)
+	m_custom_flags = 0;
+	serializer.deserializeArrayBegin();
+	while (!serializer.isArrayEnd())
 	{
-		bgfx::destroyUniform(uniform.m_handle);
+		char tmp[32];
+		serializer.deserializeArrayItem(tmp, lengthOf(tmp), "");
+		setCustomFlag(getCustomFlag(tmp));
 	}
-	m_uniforms.clear();
+	serializer.deserializeArrayEnd();
+}
+
+
+void Material::deserializeDefines(JsonSerializer& serializer)
+{
+	auto* manager = getResourceManager().get(ResourceManager::MATERIAL);
+	auto& renderer = static_cast<MaterialManager*>(manager)->getRenderer();
+	serializer.deserializeArrayBegin();
+	m_define_mask = 0;
+	while (!serializer.isArrayEnd())
+	{
+		char tmp[32];
+		serializer.deserializeArrayItem(tmp, lengthOf(tmp), "");
+		m_define_mask |= 1 << renderer.getShaderDefineIdx(tmp);
+	}
+	serializer.deserializeArrayEnd();
 }
 
 
 void Material::deserializeUniforms(JsonSerializer& serializer)
 {
 	serializer.deserializeArrayBegin();
-	clearUniforms();
+	m_uniforms.clear();
 	while (!serializer.isArrayEnd())
 	{
-		Uniform& uniform = m_uniforms.pushEmpty();
+		Uniform& uniform = m_uniforms.emplace();
 		serializer.nextArrayItem();
 		serializer.deserializeObjectBegin();
 		char label[256];
-		auto uniform_type = bgfx::UniformType::End;
 		while (!serializer.isObjectEnd())
 		{
 			serializer.deserializeLabel(label, 255);
 			if (compareString(label, "name") == 0)
 			{
-				serializer.deserialize(uniform.m_name, Uniform::MAX_NAME_LENGTH, "");
-				uniform.m_name_hash = crc32(uniform.m_name);
+				char name[32];
+				serializer.deserialize(name, lengthOf(name), "");
+				uniform.name_hash = crc32(name);
 			}
 			else if (compareString(label, "int_value") == 0)
 			{
-				uniform_type = bgfx::UniformType::Int1;
-				uniform.m_type = Uniform::INT;
-				serializer.deserialize(uniform.m_int, 0);
+				serializer.deserialize(uniform.int_value, 0);
 			}
 			else if (compareString(label, "float_value") == 0)
 			{
-				uniform.m_type = Uniform::FLOAT;
-				serializer.deserialize(uniform.m_float, 0);
+				serializer.deserialize(uniform.float_value, 0);
 			}
 			else if (compareString(label, "matrix_value") == 0)
 			{
-				uniform_type = bgfx::UniformType::Mat4;
-				uniform.m_type = Uniform::MATRIX;
 				serializer.deserializeArrayBegin();
 				for (int i = 0; i < 16; ++i)
 				{
-					serializer.deserializeArrayItem(uniform.m_matrix[i], 0);
-					ASSERT(i == 15 || !serializer.isArrayEnd());
+					serializer.deserializeArrayItem(uniform.matrix[i], 0);
 				}
 				serializer.deserializeArrayEnd();
 			}
 			else if (compareString(label, "time") == 0)
 			{
-				uniform.m_type = Uniform::TIME;
-				serializer.deserialize(uniform.m_float, 0);
+				serializer.deserialize(uniform.float_value, 0);
+			}
+			else if (compareString(label, "color") == 0)
+			{
+				serializer.deserializeArrayBegin();
+					serializer.deserializeArrayItem(uniform.vec3[0], 0);
+					serializer.deserializeArrayItem(uniform.vec3[1], 0);
+					serializer.deserializeArrayItem(uniform.vec3[2], 0);
+				serializer.deserializeArrayEnd();
+			}
+			else if (compareString(label, "vec3") == 0)
+			{
+				serializer.deserializeArrayBegin();
+					serializer.deserializeArrayItem(uniform.vec3[0], 0);
+					serializer.deserializeArrayItem(uniform.vec3[1], 0);
+					serializer.deserializeArrayItem(uniform.vec3[2], 0);
+				serializer.deserializeArrayEnd();
 			}
 			else
 			{
-				g_log_warning.log("material") << "Unknown label \"" << label << "\"";
+				g_log_warning.log("Renderer") << "Unknown label \"" << label << "\"";
 			}
 		}
-		uniform.m_handle = bgfx::createUniform(uniform.m_name, uniform_type);
-
 		serializer.deserializeObjectEnd();
 	}
 	serializer.deserializeArrayEnd();
@@ -341,7 +366,7 @@ void Material::setTexturePath(int i, const Path& path)
 
 
 void Material::setTexture(int i, Texture* texture)
-{ 
+{
 	Texture* old_texture = i < m_texture_count ? m_textures[i] : nullptr;
 
 	if (texture) addDependency(*texture);
@@ -357,16 +382,20 @@ void Material::setTexture(int i, Texture* texture)
 	if (isReady() && m_shader)
 	{
 		int define_idx = m_shader->getTextureSlot(i).m_define_idx;
-		if (define_idx >= 0 && m_textures[i])
+		if(define_idx >= 0)
 		{
-			m_shader_mask |= m_shader->getDefineMask(define_idx);
-		}
-		else
-		{
-			m_shader_mask &= ~m_shader->getDefineMask(define_idx);
+			if(m_textures[i])
+			{
+				m_define_mask |= 1 << define_idx;
+			}
+			else
+			{
+				m_define_mask &= ~(1 << define_idx);
+			}
 		}
 
-		m_shader_instance = &m_shader->getInstance(m_shader_mask);
+		createCommandBuffer();
+		m_shader_instance = &m_shader->getInstance(m_define_mask);
 	}
 }
 
@@ -378,27 +407,115 @@ void Material::setShader(const Path& path)
 }
 
 
+void Material::createCommandBuffer()
+{
+	m_allocator.deallocate(m_command_buffer);
+	m_command_buffer = nullptr;
+	if (!m_shader) return;
+
+	CommandBufferGenerator generator;
+
+	for (int i = 0; i < m_shader->getUniformCount(); ++i)
+	{
+		const Material::Uniform& uniform = m_uniforms[i];
+		const Shader::Uniform& shader_uniform = m_shader->getUniform(i);
+
+		switch (shader_uniform.type)
+		{
+			case Shader::Uniform::FLOAT:
+				generator.setUniform(shader_uniform.handle, Vec4(uniform.float_value, 0, 0, 0));
+				break;
+			case Shader::Uniform::VEC3:
+			case Shader::Uniform::COLOR:
+				generator.setUniform(shader_uniform.handle, Vec4(*(Vec3*)uniform.vec3, 0));
+				break;
+			case Shader::Uniform::TIME: generator.setTimeUniform(shader_uniform.handle); break;
+			default: ASSERT(false); break;
+		}
+	}
+
+	for (int i = 0; i < m_shader->getTextureSlotCount(); ++i)
+	{
+		if (i >= m_texture_count || !m_textures[i]) continue;
+
+		generator.setTexture(
+			i, m_shader->getTextureSlot(i).m_uniform_handle, m_textures[i]->getTextureHandle());
+	}
+
+	Vec4 color_shininess(m_color, m_shininess);
+	auto* material_manager = getResourceManager().get(ResourceManager::MATERIAL);
+	auto& renderer = static_cast<MaterialManager*>(material_manager)->getRenderer();
+	auto& uniform = renderer.getMaterialColorShininessUniform();
+	generator.setUniform(uniform, color_shininess);
+	generator.end();
+
+	m_command_buffer = (uint8*)m_allocator.allocate(generator.getSize());
+	generator.getData(m_command_buffer);
+}
+
+
 void Material::onBeforeReady()
 {
 	if (!m_shader) return;
 
-	for (int i = 0; i < m_shader->getTextureSlotCount(); ++i)
+	for(int i = 0; i < m_shader->getUniformCount(); ++i)
 	{
-		if (m_shader->getTextureSlot(i).m_define_idx >= 0 && m_textures[i])
+		auto& shader_uniform = m_shader->getUniform(i);
+		bool found = false;
+		for(int j = i; j < m_uniforms.size(); ++j)
 		{
-			m_shader_mask |= m_shader->getDefineMask(
-				m_shader->getTextureSlot(i).m_define_idx);
+			if(m_uniforms[j].name_hash == shader_uniform.name_hash)
+			{
+				auto tmp = m_uniforms[i];
+				m_uniforms[i] = m_uniforms[j];
+				m_uniforms[j] = tmp;
+				found = true;
+				break;
+			}
+		}
+		if(found) continue;
+		if(i < m_uniforms.size())
+		{
+			m_uniforms.emplace(m_uniforms[i]);
+		}
+		else
+		{
+			m_uniforms.emplace();
+		}
+		m_uniforms[i].name_hash = shader_uniform.name_hash;
+	}
+
+	uint8 alpha_ref = uint8(m_alpha_ref * 255.0f);
+	m_render_states = BGFX_STATE_ALPHA_REF(alpha_ref);
+	m_render_states |= m_shader->m_render_states;
+
+	for(int i = 0; i < m_shader->getTextureSlotCount(); ++i)
+	{
+		int define_idx = m_shader->getTextureSlot(i).m_define_idx;
+		if(define_idx >= 0)
+		{
+			if(m_textures[i])
+			{
+				m_define_mask |= 1 << define_idx;
+			}
+			else
+			{
+				m_define_mask &= ~(1 << define_idx);
+			}
 		}
 	}
-	m_shader_instance = &m_shader->getInstance(m_shader_mask);
+
+	createCommandBuffer();
+	m_shader_instance = &m_shader->getInstance(m_define_mask);
 }
 
 
 void Material::setShader(Shader* shader)
 {
-	bool is_alpha = isAlphaCutout();
-	bool is_receiver = isShadowReceiver();
-	if (m_shader)
+	auto* manager = getResourceManager().get(ResourceManager::MATERIAL);
+	auto* mat_manager = static_cast<MaterialManager*>(manager);
+
+	if (m_shader && m_shader != mat_manager->getRenderer().getDefaultShader())
 	{
 		Shader* shader = m_shader;
 		m_shader = nullptr;
@@ -409,23 +526,12 @@ void Material::setShader(Shader* shader)
 	if (m_shader)
 	{
 		addDependency(*m_shader);
-
-		if (m_shader->isReady())
-		{
-			m_shader_mask = 0;
-			enableShadowReceiving(is_receiver);
-			enableAlphaCutout(is_alpha);
-
-			for (int i = 0; i < m_shader->getTextureSlotCount(); ++i)
-			{
-				if (m_shader->getTextureSlot(i).m_define_idx >= 0 && m_textures[i])
-				{
-					m_shader_mask |= m_shader->getDefineMask(
-						m_shader->getTextureSlot(i).m_define_idx);
-				}
-			}
-			m_shader_instance = &m_shader->getInstance(m_shader_mask);
-		}
+		if (m_shader->isReady()) onBeforeReady();
+	}
+	else
+	{
+		m_shader = mat_manager->getRenderer().getDefaultShader();
+		m_shader_instance = m_shader->getFirstInstance();
 	}
 }
 
@@ -484,8 +590,8 @@ bool Material::deserializeTexture(JsonSerializer& serializer, const char* materi
 				{
 					copyString(texture_path, path);
 				}
-				m_textures[m_texture_count] = static_cast<Texture*>(
-					m_resource_manager.get(ResourceManager::TEXTURE)->load(Path(texture_path)));
+				auto* mng = m_resource_manager.get(ResourceManager::TEXTURE);
+				m_textures[m_texture_count] = static_cast<Texture*>(mng->load(Path(texture_path)));
 				addDependency(*m_textures[m_texture_count]);
 			}
 		}
@@ -507,7 +613,7 @@ bool Material::deserializeTexture(JsonSerializer& serializer, const char* materi
 			else
 			{
 				g_log_error.log("Renderer") << "Unknown texture filter \"" << label
-											<< "\" in material " << getPath().c_str();
+											<< "\" in material " << getPath();
 			}
 		}
 		else if (compareString(label, "mag_filter") == 0)
@@ -524,7 +630,7 @@ bool Material::deserializeTexture(JsonSerializer& serializer, const char* materi
 			else
 			{
 				g_log_error.log("Renderer") << "Unknown texture filter \"" << label
-											<< "\" in material " << getPath().c_str();
+											<< "\" in material " << getPath();
 			}
 		}
 		else if (compareString(label, "u_clamp") == 0)
@@ -558,10 +664,16 @@ bool Material::deserializeTexture(JsonSerializer& serializer, const char* materi
 		{
 			serializer.deserialize(keep_data, false);
 		}
+		else if (compareString(label, "srgb") == 0)
+		{
+			bool is_srgb;
+			serializer.deserialize(is_srgb, false);
+			if(is_srgb) flags |= BGFX_TEXTURE_SRGB;
+		}
 		else
 		{
 			g_log_warning.log("Renderer") << "Unknown data \"" << label << "\" in material "
-										  << getPath().c_str();
+										  << getPath();
 			return false;
 		}
 	}
@@ -581,16 +693,12 @@ bool Material::deserializeTexture(JsonSerializer& serializer, const char* materi
 }
 
 
-void Material::setRenderState(bool value, uint64 state, uint64 mask)
+void Material::setAlphaRef(float value)
 {
-	if (value)
-	{
-		m_render_states |= state;
-	}
-	else
-	{
-		m_render_states &= ~mask;
-	}
+	m_alpha_ref = value;
+	uint8 val = uint8(value * 255.0f);
+	m_render_states &= ~BGFX_STATE_ALPHA_REF_MASK;
+	m_render_states |= BGFX_STATE_ALPHA_REF(val);
 }
 
 
@@ -598,19 +706,26 @@ bool Material::load(FS::IFile& file)
 {
 	PROFILE_FUNCTION();
 
-	m_render_states = BGFX_STATE_DEPTH_TEST_LEQUAL | BGFX_STATE_CULL_CW;
+	m_render_states = 0;
+	setAlphaRef(DEFAULT_ALPHA_REF_VALUE);
 	m_uniforms.clear();
-	JsonSerializer serializer(file, JsonSerializer::READ, getPath().c_str(), m_allocator);
+	JsonSerializer serializer(file, JsonSerializer::READ, getPath(), m_allocator);
 	serializer.deserializeObjectBegin();
-	char path[MAX_PATH_LENGTH];
 	char label[256];
 	char material_dir[MAX_PATH_LENGTH];
 	PathUtils::getDir(material_dir, MAX_PATH_LENGTH, getPath().c_str());
-	bool b_value;
 	while (!serializer.isObjectEnd())
 	{
 		serializer.deserializeLabel(label, 255);
-		if (compareString(label, "uniforms") == 0)
+		if (compareString(label, "defines") == 0)
+		{
+			deserializeDefines(serializer);
+		}
+		else if (compareString(label, "custom_flags") == 0)
+		{
+			deserializeCustomFlags(serializer);
+		}
+		else if (compareString(label, "uniforms") == 0)
 		{
 			deserializeUniforms(serializer);
 		}
@@ -621,89 +736,44 @@ bool Material::load(FS::IFile& file)
 				return false;
 			}
 		}
-		else if (compareString(label, "alpha_cutout") == 0)
+		else if (compareString(label, "alpha_ref") == 0)
 		{
-			bool b;
-			serializer.deserialize(b, false);
-			enableAlphaCutout(b);
+			serializer.deserialize(m_alpha_ref, 0.3f);
 		}
-		else if (compareString(label, "alpha_blending") == 0)
+		else if (compareString(label, "layer_count") == 0)
 		{
-			if (serializer.isNextBoolean())
-			{
-				bool is_alpha_blending;
-				serializer.deserialize(is_alpha_blending, false);
-				if (is_alpha_blending)
-				{
-					m_render_states |= BGFX_STATE_BLEND_ADD;
-				}
-				else
-				{
-					m_render_states &= ~BGFX_STATE_BLEND_MASK;
-				}
-			}
-			else
-			{
-				serializer.deserialize(label, 255, "alpha");
-				if (compareString(label, "alpha") == 0)
-				{
-					m_render_states |= BGFX_STATE_BLEND_ALPHA;
-				}
-				else if (compareString(label, "add") == 0)
-				{
-					m_render_states |= BGFX_STATE_BLEND_ADD;
-				}
-				else if (compareString(label, "disabled") == 0)
-				{
-					m_render_states &= ~BGFX_STATE_BLEND_MASK;
-				}
-			}
+			serializer.deserialize(m_layer_count, 1);
 		}
-		else if (compareString(label, "specular") == 0)
+		else if (compareString(label, "color") == 0)
 		{
 			serializer.deserializeArrayBegin();
-			serializer.deserializeArrayItem(m_specular.x, 1.0f);
-			serializer.deserializeArrayItem(m_specular.y, 1.0f);
-			serializer.deserializeArrayItem(m_specular.z, 1.0f);
+			serializer.deserializeArrayItem(m_color.x, 1.0f);
+			serializer.deserializeArrayItem(m_color.y, 1.0f);
+			serializer.deserializeArrayItem(m_color.z, 1.0f);
 			serializer.deserializeArrayEnd();
 		}
 		else if (compareString(label, "shininess") == 0)
 		{
 			serializer.deserialize(m_shininess, 4.0f);
 		}
-		else if (compareString(label, "shadow_receiver") == 0)
-		{
-			bool b;
-			serializer.deserialize(b, true);
-			enableShadowReceiving(b);
-		}
 		else if (compareString(label, "shader") == 0)
 		{
-			serializer.deserialize(path, MAX_PATH_LENGTH, "");
-			setShader(static_cast<Shader*>(
-				m_resource_manager.get(ResourceManager::SHADER)->load(Path(path))));
-		}
-		else if (compareString(label, "z_test") == 0)
-		{
-			serializer.deserialize(b_value, true);
-			enableZTest(b_value);
-		}
-		else if (compareString(label, "backface_culling") == 0)
-		{
-			serializer.deserialize(b_value, true);
-			enableBackfaceCulling(b_value);
+			Path path;
+			serializer.deserialize(path, Path(""));
+			auto* manager = m_resource_manager.get(ResourceManager::SHADER);
+			setShader(static_cast<Shader*>(manager->load(Path(path))));
 		}
 		else
 		{
-			g_log_warning.log("renderer") << "Unknown parameter " << label << " in material "
-										  << getPath().c_str();
+			g_log_warning.log("Renderer") << "Unknown parameter " << label << " in material "
+										  << getPath();
 		}
 	}
 	serializer.deserializeObjectEnd();
 
 	if (!m_shader)
 	{
-		g_log_error.log("renderer") << "Material " << getPath().c_str() << " without a shader";
+		g_log_error.log("Renderer") << "Material " << getPath() << " without a shader";
 		return false;
 	}
 

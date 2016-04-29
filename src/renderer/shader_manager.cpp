@@ -1,7 +1,7 @@
-#include "lumix.h"
+#include "engine/lumix.h"
 #include "renderer/shader_manager.h"
 
-#include "core/resource.h"
+#include "engine/core/resource.h"
 #include "renderer/shader.h"
 
 namespace Lumix
@@ -56,7 +56,6 @@ uint8* ShaderManager::getBuffer(int32 size)
 ShaderBinaryManager::ShaderBinaryManager(Renderer& renderer, IAllocator& allocator)
 	: ResourceManagerBase(allocator)
 	, m_allocator(allocator)
-	, m_renderer(renderer)
 {
 }
 

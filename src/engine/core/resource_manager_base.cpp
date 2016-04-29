@@ -1,11 +1,11 @@
-#include "lumix.h"
-#include "core/resource_manager_base.h"
+#include "engine/lumix.h"
+#include "engine/core/resource_manager_base.h"
 
-#include "core/crc32.h"
-#include "core/path.h"
-#include "core/path_utils.h"
-#include "core/resource.h"
-#include "core/resource_manager.h"
+#include "engine/core/crc32.h"
+#include "engine/core/path.h"
+#include "engine/core/path_utils.h"
+#include "engine/core/resource.h"
+#include "engine/core/resource_manager.h"
 
 namespace Lumix
 {
@@ -28,7 +28,7 @@ namespace Lumix
 
 	Resource* ResourceManagerBase::get(const Path& path)
 	{
-		ResourceTable::iterator it = m_resources.find(path);
+		ResourceTable::iterator it = m_resources.find(path.getHash());
 
 		if(m_resources.end() != it)
 		{
@@ -41,14 +41,14 @@ namespace Lumix
 	void ResourceManagerBase::remove(Resource* resource)
 	{
 		ASSERT(resource->isEmpty());
-		m_resources.erase(resource->getPath());
+		m_resources.erase(resource->getPath().getHash());
 		resource->remRef();
 	}
 
 	void ResourceManagerBase::add(Resource* resource)
 	{
 		ASSERT(resource && resource->isReady());
-		m_resources.insert(resource->getPath(), resource);
+		m_resources.insert(resource->getPath().getHash(), resource);
 		resource->addRef();
 	}
 
@@ -59,7 +59,7 @@ namespace Lumix
 		if(nullptr == resource)
 		{
 			resource = createResource(path);
-			m_resources.insert(path, resource);
+			m_resources.insert(path.getHash(), resource);
 		}
 		
 		if(resource->isEmpty())
@@ -69,6 +69,21 @@ namespace Lumix
 
 		resource->addRef();
 		return resource;
+	}
+
+	void ResourceManagerBase::removeUnreferenced()
+	{
+		Array<Resource*> to_remove(m_allocator);
+		for (auto* i : m_resources)
+		{
+			if (i->getRefCount() == 0) to_remove.push(i);
+		}
+
+		for (auto* i : to_remove)
+		{
+			m_resources.erase(i->getPath().getHash());
+			destroyResource(*i);
+		}
 	}
 
 	void ResourceManagerBase::load(Resource& resource)
@@ -131,10 +146,11 @@ namespace Lumix
 	ResourceManagerBase::ResourceManagerBase(IAllocator& allocator)
 		: m_size(0)
 		, m_resources(allocator)
+		, m_allocator(allocator)
 	{ }
 
 	ResourceManagerBase::~ResourceManagerBase()
-	{ 
+	{
 		ASSERT(m_resources.empty());
 	}
 }

@@ -1,22 +1,21 @@
 #include "terrain.h"
-#include "core/aabb.h"
-#include "core/blob.h"
-#include "core/crc32.h"
-#include "core/frustum.h"
-#include "core/json_serializer.h"
-#include "core/lifo_allocator.h"
-#include "core/log.h"
-#include "core/math_utils.h"
-#include "core/profiler.h"
-#include "core/resource_manager.h"
-#include "engine.h"
+#include "engine/core/blob.h"
+#include "engine/core/crc32.h"
+#include "engine/core/geometry.h"
+#include "engine/core/json_serializer.h"
+#include "engine/core/lifo_allocator.h"
+#include "engine/core/log.h"
+#include "engine/core/math_utils.h"
+#include "engine/core/profiler.h"
+#include "engine/core/resource_manager.h"
+#include "engine/core/resource_manager_base.h"
+#include "engine/engine.h"
 #include "renderer/material.h"
 #include "renderer/model.h"
-#include "renderer/pipeline.h"
 #include "renderer/render_scene.h"
 #include "renderer/shader.h"
 #include "renderer/texture.h"
-#include "universe/universe.h"
+#include "engine/universe/universe.h"
 #include <cfloat>
 #include <cmath>
 
@@ -57,7 +56,7 @@ struct TerrainQuad
 		CHILD_COUNT
 	};
 
-	TerrainQuad(IAllocator& allocator)
+	explicit TerrainQuad(IAllocator& allocator)
 		: m_allocator(allocator)
 	{
 		for (int i = 0; i < CHILD_COUNT; ++i)
@@ -146,7 +145,7 @@ struct TerrainQuad
 		if (squared_dist > r * r && m_lod > 1) return false;
 
 		Vec3 morph_const(r, getRadiusInner(m_size), 0);
-		Shader& shader = *terrain->getMesh()->getMaterial()->getShader();
+		Shader& shader = *terrain->getMesh()->material->getShader();
 		for (int i = 0; i < CHILD_COUNT; ++i)
 		{
 			if (!m_children[i] ||
@@ -243,6 +242,7 @@ Terrain::GrassType::GrassType(Terrain& terrain)
 	m_grass_model = nullptr;
 	m_ground = 0;
 	m_density = 10;
+	m_distance = 50;
 }
 
 
@@ -281,10 +281,30 @@ void Terrain::setGrassTypeDensity(int index, int density)
 }
 
 
-int Terrain::getGrassTypeDensity(int index)
+int Terrain::getGrassTypeDensity(int index) const
 {
 	GrassType& type = *m_grass_types[index];
 	return type.m_density;
+}
+
+
+void Terrain::setGrassTypeDistance(int index, float distance)
+{
+	forceGrassUpdate();
+	GrassType& type = *m_grass_types[index];
+	type.m_distance = Math::clamp(distance, 1.0f, FLT_MAX);
+	m_grass_distance = 0;
+	for (auto* type : m_grass_types)
+	{
+		m_grass_distance = Math::maximum(m_grass_distance, int(type->m_distance / GRASS_QUAD_RADIUS + 0.99f));
+	}
+}
+
+
+float Terrain::getGrassTypeDistance(int index) const
+{
+	GrassType& type = *m_grass_types[index];
+	return type.m_distance;
 }
 
 
@@ -297,10 +317,27 @@ void Terrain::setGrassTypeGround(int index, int ground)
 }
 	
 	
-int Terrain::getGrassTypeGround(int index)
+int Terrain::getGrassTypeGround(int index) const
 {
 	GrassType& type = *m_grass_types[index];
 	return type.m_ground;
+}
+
+
+AABB Terrain::getAABB() const
+{
+	Vec3 min(0, 0, 0);
+	Vec3 max(m_width * m_scale.x, 0, m_height * m_scale.z);
+	for (int j = 0; j < m_height; ++j)
+	{
+		for (int i = 0; i < m_width; ++i)
+		{
+			float height = getHeight(i, j);
+			if (height > max.y) max.y = height;
+		}
+	}
+			
+	return AABB(min, max);
 }
 
 
@@ -387,16 +424,16 @@ void Terrain::generateGrassTypeQuad(GrassPatch& patch,
 
 			if (density < 0.25f) continue;
 
-			Matrix& grass_mtx = patch.m_matrices.pushEmpty();
+			Matrix& grass_mtx = patch.m_matrices.emplace();
 			grass_mtx = Matrix::IDENTITY;
-			float x = quad_x + dx + step * (rand() % 100 - 50) / 100.0f;
-			float z = quad_z + dz + step * (rand() % 100 - 50) / 100.0f;
+			float x = quad_x + dx + step * Math::randFloat(-0.5f, 0.5f);
+			float z = quad_z + dz + step * Math::randFloat(-0.5f, 0.5f);
 			grass_mtx.setTranslation(Vec3(x, getHeight(x, z), z));
-			Quat q(Vec3(0, 1, 0), Math::degreesToRadians((float)(rand() % 360)));
+			Quat q(Vec3(0, 1, 0), Math::randFloat(0, Math::PI * 2));
 			Matrix rotMatrix;
 			q.toMatrix(rotMatrix);
 			grass_mtx = terrain_matrix * grass_mtx * rotMatrix;
-			grass_mtx.multiply3x3(density + (rand() % 20 - 10) / 100.0f);
+			grass_mtx.multiply3x3(density + Math::randFloat(-0.1f, 0.1f));
 		}
 	}
 }
@@ -443,10 +480,10 @@ void Terrain::updateGrass(ComponentIndex camera)
 	for (int i = quads.size() - 1; i >= 0; --i)
 	{
 		GrassQuad* quad = quads[i];
-		old_bounds[0] = Math::minValue(old_bounds[0], quad->pos.x);
-		old_bounds[1] = Math::maxValue(old_bounds[1], quad->pos.x);
-		old_bounds[2] = Math::minValue(old_bounds[2], quad->pos.z);
-		old_bounds[3] = Math::maxValue(old_bounds[3], quad->pos.z);
+		old_bounds[0] = Math::minimum(old_bounds[0], quad->pos.x);
+		old_bounds[1] = Math::maximum(old_bounds[1], quad->pos.x);
+		old_bounds[2] = Math::minimum(old_bounds[2], quad->pos.z);
+		old_bounds[3] = Math::maximum(old_bounds[3], quad->pos.z);
 		if (quad->pos.x < from_quad_x || quad->pos.x > to_quad_x || quad->pos.z < from_quad_z ||
 			quad->pos.z > to_quad_z)
 		{
@@ -455,8 +492,8 @@ void Terrain::updateGrass(ComponentIndex camera)
 		}
 	}
 
-	from_quad_x = Math::maxValue(0.0f, from_quad_x);
-	from_quad_z = Math::maxValue(0.0f, from_quad_z);
+	from_quad_x = Math::maximum(0.0f, from_quad_x);
+	from_quad_z = Math::maximum(0.0f, from_quad_z);
 
 	for (float quad_z = from_quad_z; quad_z <= to_quad_z; quad_z += GRASS_QUAD_SIZE)
 	{
@@ -495,13 +532,13 @@ void Terrain::updateGrass(ComponentIndex camera)
 				generateGrassTypeQuad(patch, mtx, quad_x, quad_z);
 				for (auto mtx : patch.m_matrices)
 				{
-					min_y = Math::minValue(mtx.getTranslation().y, min_y);
-					max_y = Math::maxValue(mtx.getTranslation().y, max_y);
+					min_y = Math::minimum(mtx.getTranslation().y, min_y);
+					max_y = Math::maximum(mtx.getTranslation().y, max_y);
 				}
 			}
 
 			quad->pos.y = (max_y + min_y) * 0.5f;
-			quad->radius = Math::maxValue((max_y - min_y) * 0.5f, (float)GRASS_QUAD_SIZE) * 1.42f;
+			quad->radius = Math::maximum((max_y - min_y) * 0.5f, (float)GRASS_QUAD_SIZE) * 1.42f;
 
 		}
 	}
@@ -516,26 +553,32 @@ void Terrain::GrassType::grassLoaded(Resource::State, Resource::State)
 
 void Terrain::getGrassInfos(const Frustum& frustum, Array<GrassInfo>& infos, ComponentIndex camera)
 {
+	if (!m_material || !m_material->isReady()) return;
+
 	updateGrass(camera);
 	Array<GrassQuad*>& quads = getQuads(camera);
 	
 	Universe& universe = m_scene.getUniverse();
 	Matrix mtx = universe.getMatrix(m_entity);
+	Vec3 frustum_position = frustum.position;
 	for (auto* quad : quads)
 	{
 		Vec3 quad_center(quad->pos.x + GRASS_QUAD_SIZE * 0.5f, quad->pos.y, quad->pos.z + GRASS_QUAD_SIZE * 0.5f);
 		quad_center = mtx.multiplyPosition(quad_center);
-		if(frustum.isSphereInside(quad_center, quad->radius)) 
+		if (frustum.isSphereInside(quad_center, quad->radius))
 		{
-			for(int patch_idx = 0; patch_idx < quad->m_patches.size(); ++patch_idx)
+			float dist2 = (quad_center - frustum_position).squaredLength();
+			for (int patch_idx = 0; patch_idx < quad->m_patches.size(); ++patch_idx)
 			{
 				const GrassPatch& patch = quad->m_patches[patch_idx];
+				if (patch.m_type->m_distance * patch.m_type->m_distance < dist2) continue;
 				if (!patch.m_matrices.empty())
 				{
-					GrassInfo& info = infos.pushEmpty();
-					info.m_matrices = &patch.m_matrices[0];
-					info.m_matrix_count = patch.m_matrices.size();
-					info.m_model = patch.m_type->m_grass_model;
+					GrassInfo& info = infos.emplace();
+					info.matrices = &patch.m_matrices[0];
+					info.matrix_count = patch.m_matrices.size();
+					info.model = patch.m_type->m_grass_model;
+					info.type_distance = patch.m_type->m_distance;
 				}
 			}
 		}
@@ -557,7 +600,7 @@ void Terrain::setMaterial(Material* material)
 		m_heightmap = nullptr;
 		if (m_mesh && m_material)
 		{
-			m_mesh->setMaterial(m_material);
+			m_mesh->material = m_material;
 			m_material->onLoaded<Terrain, &Terrain::onMaterialLoaded>(this);
 		}
 	}
@@ -567,7 +610,7 @@ void Terrain::setMaterial(Material* material)
 	}
 }
 
-void Terrain::deserialize(InputBlob& serializer, Universe& universe, RenderScene& scene, int index)
+void Terrain::deserialize(InputBlob& serializer, Universe& universe, RenderScene& scene, int index, int version)
 {
 	serializer.read(m_entity);
 	serializer.read(m_layer_mask);
@@ -594,12 +637,16 @@ void Terrain::deserialize(InputBlob& serializer, Universe& universe, RenderScene
 		serializer.readString(path, MAX_PATH_LENGTH);
 		serializer.read(m_grass_types[i]->m_ground);
 		serializer.read(m_grass_types[i]->m_density);
+		if (version > (int)RenderSceneVersion::GRASS_TYPE_DISTANCE)
+		{
+			serializer.read(m_grass_types[i]->m_distance);
+		}
 		setGrassTypePath(i, Path(path));
 	}
 	universe.addComponent(m_entity, TERRAIN_HASH, &scene, index);
 }
 
-
+	
 void Terrain::serialize(OutputBlob& serializer)
 {
 	serializer.write(m_entity);
@@ -615,22 +662,23 @@ void Terrain::serialize(OutputBlob& serializer)
 		serializer.writeString(type.m_grass_model ? type.m_grass_model->getPath().c_str() : "");
 		serializer.write(type.m_ground);
 		serializer.write(type.m_density);
+		serializer.write(type.m_distance);
 	}
 }
 
 
 void Terrain::getInfos(Array<const TerrainInfo*>& infos, const Vec3& camera_pos, LIFOAllocator& allocator)
 {
-	if (m_root)
-	{
-		Matrix matrix = m_scene.getUniverse().getMatrix(m_entity);
-		Matrix inv_matrix = matrix;
-		inv_matrix.fastInverse();
-		Vec3 local_camera_pos = inv_matrix.multiplyPosition(camera_pos);
-		local_camera_pos.x /= m_scale.x;
-		local_camera_pos.z /= m_scale.z;
-		m_root->getInfos(infos, local_camera_pos, this, matrix, allocator);
-	}
+	if (!m_root) return;
+	if (!m_material || !m_material->isReady()) return;
+
+	Matrix matrix = m_scene.getUniverse().getMatrix(m_entity);
+	Matrix inv_matrix = matrix;
+	inv_matrix.fastInverse();
+	Vec3 local_camera_pos = inv_matrix.multiplyPosition(camera_pos);
+	local_camera_pos.x /= m_scale.x;
+	local_camera_pos.z /= m_scale.z;
+	m_root->getInfos(infos, local_camera_pos, this, matrix, allocator);
 }
 
 
@@ -657,7 +705,7 @@ Vec3 Terrain::getNormal(float x, float z)
 }
 
 	
-float Terrain::getHeight(float x, float z)
+float Terrain::getHeight(float x, float z) const
 {
 	int int_x = (int)(x / m_scale.x);
 	int int_z = (int)(z / m_scale.x);
@@ -684,7 +732,7 @@ float Terrain::getHeight(float x, float z)
 }
 	
 
-float Terrain::getHeight(int x, int z)
+float Terrain::getHeight(int x, int z) const
 {
 	if (!m_heightmap) return 0;
 
@@ -768,14 +816,14 @@ RayCastModelHit Terrain::castRay(const Vec3& origin, const Vec3& dir)
 			int hz = (int)(start.z / m_scale.x);
 
 			float next_x = fabs(rel_dir.x) < 0.01f ? hx : ((hx + (rel_dir.x < 0 ? 0 : 1)) * m_scale.x - rel_origin.x) / rel_dir.x;
-			float next_z = fabs(rel_dir.z) < 0.01f ? hx : ((hz + (rel_dir.z < 0 ? 0 : 1)) * m_scale.x - rel_origin.z) / rel_dir.z;
+			float next_z = fabs(rel_dir.z) < 0.01f ? hz : ((hz + (rel_dir.z < 0 ? 0 : 1)) * m_scale.x - rel_origin.z) / rel_dir.z;
 
 			float delta_x = fabs(rel_dir.x) < 0.01f ? 0 : m_scale.x / Math::abs(rel_dir.x);
 			float delta_z = fabs(rel_dir.z) < 0.01f ? 0 : m_scale.x / Math::abs(rel_dir.z);
 			int step_x = (int)Math::signum(rel_dir.x);
 			int step_z = (int)Math::signum(rel_dir.z);
 
-			while (hx >= 0 && hz >= 0 && hx + 1 < m_width && hz + 1 < m_height)
+			while (hx >= 0 && hz >= 0 && hx + step_x < m_width && hz + step_z < m_height)
 			{
 				float t;
 				float x = hx * m_scale.x;

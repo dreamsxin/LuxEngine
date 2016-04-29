@@ -1,12 +1,10 @@
 #include "unit_tests/suite/lumix_unit_tests.h"
 
-#include "core/sphere.h"
-#include "core/vec.h"
-#include "core/frustum.h"
-#include "core/timer.h"
-#include "core/log.h"
+#include "engine/core/geometry.h"
+#include "engine/core/timer.h"
+#include "engine/core/log.h"
 
-#include "core/MTJD/manager.h"
+#include "engine/core/mtjd/manager.h"
 
 #include "renderer/culling_system.h"
 
@@ -39,9 +37,13 @@ namespace
 	{
 		Lumix::DefaultAllocator allocator;
 		Lumix::Array<Lumix::Sphere> spheres(allocator);
+		Lumix::Array<Lumix::ComponentIndex> renderables(allocator);
+		int renderable = 0;
 		for (float i = 0.f; i < 30000000.0f; i += 15.f)
 		{
 			spheres.push(Lumix::Sphere(i, 0.f, 50.f, 5.f));
+			renderables.push(renderable);
+			++renderable;
 		}
 
 		Lumix::Frustum clipping_frustum;
@@ -59,7 +61,7 @@ namespace
 			Lumix::MTJD::Manager* mtjd_manager = Lumix::MTJD::Manager::create(allocator);
 
 			culling_system = Lumix::CullingSystem::create(*mtjd_manager, allocator);
-			culling_system->insert(spheres);
+			culling_system->insert(spheres, renderables);
 
 			Lumix::ScopedTimer timer("Culling System", allocator);
 
@@ -71,7 +73,7 @@ namespace
 				const Lumix::CullingSystem::Subresults& subresult = result[i];
 				for (int j = 0; j < subresult.size(); ++j)
 				{
-					LUMIX_EXPECT_TRUE(subresult[i] < 6);
+					LUMIX_EXPECT(subresult[i] < 6);
 				}
 			}
 
@@ -85,9 +87,13 @@ namespace
 	{
 		Lumix::DefaultAllocator allocator;
 		Lumix::Array<Lumix::Sphere> spheres(allocator);
-		for (float i = 0.f; i < 30000000.f; i += 15.f)
+		Lumix::Array<Lumix::ComponentIndex> renderables(allocator);
+		int renderable = 0;
+		for(float i = 0.f; i < 30000000.0f; i += 15.f)
 		{
 			spheres.push(Lumix::Sphere(i, 0.f, 50.f, 5.f));
+			renderables.push(renderable);
+			++renderable;
 		}
 
 		Lumix::Frustum clipping_frustum;
@@ -105,7 +111,7 @@ namespace
 			Lumix::MTJD::Manager* mtjd_manager = Lumix::MTJD::Manager::create(allocator);
 
 			culling_system = Lumix::CullingSystem::create(*mtjd_manager, allocator);
-			culling_system->insert(spheres);
+			culling_system->insert(spheres, renderables);
 
 			Lumix::ScopedTimer timer("Culling System Async", allocator);
 
@@ -118,7 +124,7 @@ namespace
 				const Lumix::CullingSystem::Subresults& subresult = result[i];
 				for (int j = 0; j < subresult.size(); ++j)
 				{
-					LUMIX_EXPECT_TRUE(subresult[i] < 6);
+					LUMIX_EXPECT(subresult[i] < 6);
 				}
 			}
 

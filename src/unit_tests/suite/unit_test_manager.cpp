@@ -1,14 +1,13 @@
 #include "unit_tests/suite/lumix_unit_tests.h"
 
-#include "core/log.h"
-#include "core/mt/lock_free_fixed_queue.h"
-#include "core/mt/task.h"
-#include "core/MT/thread.h"
-#include "core/mt/transaction.h"
-#include "core/queue.h"
-#include "core/array.h"
+#include "engine/core/log.h"
+#include "engine/core/mt/lock_free_fixed_queue.h"
+#include "engine/core/mt/task.h"
+#include "engine/core/mt/thread.h"
+#include "engine/core/mt/transaction.h"
+#include "engine/core/queue.h"
+#include "engine/core/array.h"
 
-#include "core/pc/simple_win.h"
 #include <Windows.h>
 #include <cstdio>
 
@@ -31,6 +30,7 @@ namespace Lumix
 
 		struct FailInfo
 		{
+			char m_message[1024];
 			const char* m_file_name;
 			uint32 m_line;
 		};
@@ -82,7 +82,7 @@ namespace Lumix
 		public:
 			void registerFunction(const char* name, Manager::unitTestFunc func, const char* params)
 			{
-				UnitTestPair& pair = m_unit_tests.pushEmpty();
+				UnitTestPair& pair = m_unit_tests.emplace();
 				pair.name = name;
 				pair.parameters = params;
 				pair.func = func;
@@ -159,16 +159,14 @@ namespace Lumix
 
 			void dumpResults() const
 			{
-				
 				if (m_fails > 0)
 				{
-					ASSERT(false);
-
 					g_log_info.log("unit") << "----------Fails----------";
-					for (int i = 0; i < m_failed_tests.size(); i++) 
+					for (auto& i : m_failed_tests) 
 					{
-						g_log_info.log("unit") << m_failed_tests[i].m_file_name << "(" << m_failed_tests[i].m_line << ")";
+						g_log_info.log("unit") << i.m_message << " : " << i.m_file_name << "(" << i.m_line << ")";
 					}
+					ASSERT(false);
 				}
 
 				FILE* fout = fopen("tests.xml", "w");
@@ -192,9 +190,10 @@ namespace Lumix
 				g_log_info.log("unit") << "---------------------------";
 			}
 
-			void handleFail(const char* file_name, uint32 line)
+			void handleFail(const char* msg, const char* file_name, uint32 line)
 			{	
-				FailInfo& fi = m_failed_tests.pushEmpty();
+				FailInfo& fi = m_failed_tests.emplace();
+				Lumix::copyString(fi.m_message, msg);
 				fi.m_file_name = file_name;
 				fi.m_line = line;
 				m_fails++;
@@ -213,7 +212,7 @@ namespace Lumix
 				m_task.run();
 			}
 
-			ManagerImpl(IAllocator& allocator)
+			explicit ManagerImpl(IAllocator& allocator)
 				: m_fails(0)
 				, m_task(&m_trans_queue, allocator)
 				, m_in_progress(allocator)
@@ -299,9 +298,9 @@ namespace Lumix
 			m_impl->dumpResults();
 		}
 
-		void Manager::handleFail(const char* file_name, uint32 line)
+		void Manager::handleFail(const char* msg, const char* file_name, uint32 line)
 		{
-			m_impl->handleFail(file_name, line);
+			m_impl->handleFail(msg, file_name, line);
 		}
 
 		Manager::Manager(IAllocator& allocator)

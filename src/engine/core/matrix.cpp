@@ -1,6 +1,6 @@
-#include "core/matrix.h"
-#include "core/quat.h"
-#include "core/vec.h"
+#include "engine/core/matrix.h"
+#include "engine/core/quat.h"
+#include "engine/core/vec.h"
 #include <cmath>
 
 
@@ -108,20 +108,6 @@ Matrix Matrix::operator *(const Matrix& rhs) const
 		this->m13 * rhs.m41 + this->m23 * rhs.m42 + this->m33 * rhs.m43 + this->m43 * rhs.m44,
 		this->m14 * rhs.m41 + this->m24 * rhs.m42 + this->m34 * rhs.m43 + this->m44 * rhs.m44
 	);
-}
-
-
-void Matrix::getTranslation(Vec3& pos) const
-{
-	pos.x = m41;
-	pos.y = m42;
-	pos.z = m43;
-}
-
-
-Vec3 Matrix::getTranslation() const
-{
-	return Vec3(m41, m42, m43);
 }
 
 

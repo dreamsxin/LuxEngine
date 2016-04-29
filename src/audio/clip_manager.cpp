@@ -1,10 +1,10 @@
 #include "clip_manager.h"
-#include "core/iallocator.h"
-#include "core/fs/ifile.h"
-#include "core/resource.h"
-#include "lumix.h"
+#include "engine/core/iallocator.h"
+#include "engine/core/resource.h"
+#include "engine/core/string.h"
+#include "engine/lumix.h"
 #define STB_VORBIS_HEADER_ONLY
-#include "stb_vorbis.c"
+#include "stb_vorbis.cpp"
 #include <cstdlib>
 
 
@@ -25,8 +25,8 @@ bool Clip::load(FS::IFile& file)
 		(unsigned char*)file.getBuffer(), (int)file.size(), &m_channels, &m_sample_rate, &output);
 	if (res <= 0) return false;
 
-	m_data.resize(res);
-	copyMemory(&m_data[0], output, res);
+	m_data.resize(res * m_channels);
+	copyMemory(&m_data[0], output, res * m_channels * sizeof(m_data[0]));
 	free(output);
 
 	return true;

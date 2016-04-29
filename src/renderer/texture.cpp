@@ -1,11 +1,10 @@
-#include "core/fs/file_system.h"
-#include "core/fs/ifile.h"
-#include "core/log.h"
-#include "core/math_utils.h"
-#include "core/path_utils.h"
-#include "core/profiler.h"
-#include "core/resource_manager.h"
-#include "core/resource_manager_base.h"
+#include "engine/core/fs/file_system.h"
+#include "engine/core/log.h"
+#include "engine/core/math_utils.h"
+#include "engine/core/path_utils.h"
+#include "engine/core/profiler.h"
+#include "engine/core/resource_manager.h"
+#include "engine/core/resource_manager_base.h"
 #include "renderer/texture.h"
 #include "renderer/texture_manager.h"
 #include <bgfx/bgfx.h>
@@ -150,14 +149,10 @@ uint32 Texture::getPixel(float x, float y) const
 	int w4 = (int)(fx * fy * 256.0f);
 
 	uint8 res[4];
-	res[0] =
-		(uint8)((p1[0] * w1 + p2[0] * w2 + p3[0] * w3 + p4[0] * w4) >> 8);
-	res[1] =
-		(uint8)((p1[1] * w1 + p2[1] * w2 + p3[1] * w3 + p4[1] * w4) >> 8);
-	res[2] =
-		(uint8)((p1[2] * w1 + p2[2] * w2 + p3[2] * w3 + p4[2] * w4) >> 8);
-	res[3] =
-		(uint8)((p1[3] * w1 + p2[3] * w2 + p3[3] * w3 + p4[3] * w4) >> 8);
+	res[0] = (uint8)((p1[0] * w1 + p2[0] * w2 + p3[0] * w3 + p4[0] * w4) >> 8);
+	res[1] = (uint8)((p1[1] * w1 + p2[1] * w2 + p3[1] * w3 + p4[1] * w4) >> 8);
+	res[2] = (uint8)((p1[2] * w1 + p2[2] * w2 + p3[2] * w3 + p4[2] * w4) >> 8);
+	res[3] = (uint8)((p1[3] * w1 + p2[3] * w2 + p3[3] * w3 + p4[3] * w4) >> 8);
 
 	return *(uint32*)res;
 }
@@ -177,7 +172,7 @@ unsigned int Texture::compareTGA(IAllocator& allocator,
 		header1.dataType != header2.dataType ||
 		header1.imageDescriptor != header2.imageDescriptor)
 	{
-		g_log_error.log("renderer")
+		g_log_error.log("Renderer")
 			<< "Trying to compare textures with different formats";
 		return 0;
 	}
@@ -185,7 +180,7 @@ unsigned int Texture::compareTGA(IAllocator& allocator,
 	int color_mode = header1.bitsPerPixel / 8;
 	if (header1.dataType != 2)
 	{
-		g_log_error.log("renderer") << "Unsupported texture format";
+		g_log_error.log("Renderer") << "Unsupported texture format";
 		return 0;
 	}
 
@@ -226,7 +221,7 @@ bool Texture::saveTGA(IAllocator& allocator,
 {
 	if (bytes_per_pixel != 4)
 	{
-		g_log_error.log("renderer")
+		g_log_error.log("Renderer")
 			<< "Texture " << path.c_str()
 			<< " could not be saved, unsupported TGA format";
 		return false;
@@ -271,16 +266,16 @@ void Texture::saveTGA()
 {
 	if (m_data.empty())
 	{
-		g_log_error.log("renderer")
+		g_log_error.log("Renderer")
 			<< "Texture " << getPath().c_str()
 			<< " could not be saved, no data was loaded";
 		return;
 	}
 
 	FS::FileSystem& fs = m_resource_manager.getFileSystem();
-	FS::IFile* file = fs.open(fs.getDiskDevice(),
-							  getPath().c_str(),
-							  FS::Mode::OPEN_OR_CREATE | FS::Mode::WRITE);
+	FS::IFile* file = fs.open(fs.getDefaultDevice(),
+							  getPath(),
+							  FS::Mode::CREATE_AND_WRITE);
 
 	saveTGA(m_allocator, file, m_width, m_height, m_BPP, &m_data[0], getPath());
 
@@ -297,8 +292,8 @@ void Texture::save()
 	{
 		FS::FileSystem& fs = m_resource_manager.getFileSystem();
 		FS::IFile* file = fs.open(fs.getDefaultDevice(),
-								  getPath().c_str(),
-								  FS::Mode::OPEN_OR_CREATE | FS::Mode::WRITE);
+								  getPath(),
+								  FS::Mode::CREATE_AND_WRITE);
 
 		file->write(&m_data[0], m_data.size() * sizeof(m_data[0]));
 		fs.close(*file);
@@ -309,7 +304,7 @@ void Texture::save()
 	}
 	else
 	{
-		g_log_error.log("renderer") << "Texture " << getPath()
+		g_log_error.log("Renderer") << "Texture " << getPath().c_str()
 									<< " can not be saved - unsupported format";
 	}
 }
@@ -402,13 +397,13 @@ bool Texture::loadTGA(FS::IFile& file)
 	int image_size = header.width * header.height * 4;
 	if (header.dataType != 2)
 	{
-		g_log_error.log("renderer") << "Unsupported texture format " << getPath().c_str();
+		g_log_error.log("Renderer") << "Unsupported texture format " << getPath().c_str();
 		return false;
 	}
 
 	if (color_mode < 3)
 	{
-		g_log_error.log("renderer") << "Unsupported color mode " << getPath().c_str();
+		g_log_error.log("Renderer") << "Unsupported color mode " << getPath().c_str();
 		return false;
 	}
 
@@ -522,7 +517,7 @@ bool Texture::load(FS::IFile& file)
 	}
 	if (!loaded)
 	{
-		g_log_warning.log("renderer") << "Error loading texture " << getPath().c_str();
+		g_log_warning.log("Renderer") << "Error loading texture " << path;
 		return false;
 	}
 

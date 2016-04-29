@@ -1,8 +1,8 @@
 #include "unit_tests/suite/lumix_unit_tests.h"
 
-#include "core/mt/lock_free_fixed_queue.h"
-#include "core/mt/task.h"
-#include "core/mt/thread.h"
+#include "engine/core/mt/lock_free_fixed_queue.h"
+#include "engine/core/mt/task.h"
+#include "engine/core/mt/thread.h"
 
 namespace
 {
@@ -39,7 +39,7 @@ namespace
 			while (!m_queue->isAborted())
 			{
 				Test* test = m_queue->pop(true);
-				if (NULL == test)
+				if (nullptr == test)
 					break;
 
 				m_sum += test->value;
@@ -81,7 +81,7 @@ namespace
 		queue.abort();
 		testTaskConsumer.destroy();
 
-		LUMIX_EXPECT_EQ(RUN_COUNT, testTaskConsumer.getSum());
+		LUMIX_EXPECT(RUN_COUNT == testTaskConsumer.getSum());
 	};
 }
 

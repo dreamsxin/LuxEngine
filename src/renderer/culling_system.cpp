@@ -1,40 +1,42 @@
 #include "culling_system.h"
-#include "lumix.h"
+#include "engine/lumix.h"
 
-#include "core/array.h"
-#include "core/binary_array.h"
-#include "core/free_list.h"
-#include "core/frustum.h"
-#include "core/sphere.h"
+#include "engine/core/binary_array.h"
+#include "engine/core/free_list.h"
+#include "engine/core/geometry.h"
+#include "engine/core/profiler.h"
 
-#include "core/mtjd/group.h"
-#include "core/mtjd/manager.h"
-#include "core/mtjd/job.h"
+#include "engine/core/mtjd/group.h"
+#include "engine/core/mtjd/manager.h"
+#include "engine/core/mtjd/job.h"
 
 namespace Lumix
 {
-typedef BinaryArray VisibilityFlags;
 typedef Array<int64> LayerMasks;
+typedef Array<ComponentIndex> RenderabletoSphereMap;
+typedef Array<int> SphereToRenderableMap;
 
 static const int MIN_ENTITIES_PER_THREAD = 50;
 
 static void doCulling(int start_index,
 	const Sphere* LUMIX_RESTRICT start,
 	const Sphere* LUMIX_RESTRICT end,
-	const VisibilityFlags& visiblity_flags,
 	const Frustum* LUMIX_RESTRICT frustum,
 	const int64* LUMIX_RESTRICT layer_masks,
+	const int* LUMIX_RESTRICT sphere_to_renderable_map,
 	int64 layer_mask,
 	CullingSystem::Subresults& results)
 {
+	PROFILE_FUNCTION();
 	int i = start_index;
 	ASSERT(results.empty());
+	PROFILE_INT("objects", int(end - start));
 	for (const Sphere *sphere = start; sphere <= end; sphere++, ++i)
 	{
-		if (frustum->isSphereInside(sphere->m_position, sphere->m_radius) && visiblity_flags[i] &&
+		if (frustum->isSphereInside(sphere->m_position, sphere->m_radius) &&
 			((layer_masks[i] & layer_mask) != 0))
 		{
-			results.push(i);
+			results.push(sphere_to_renderable_map[i]);
 		}
 	}
 }
@@ -43,8 +45,8 @@ class CullingJob : public MTJD::Job
 {
 public:
 	CullingJob(const CullingSystem::InputSpheres& spheres,
-		const VisibilityFlags& visibility_flags,
 		const LayerMasks& layer_masks,
+		const SphereToRenderableMap& sphere_to_renderable_map,
 		int64 layer_mask,
 		CullingSystem::Subresults& results,
 		int start,
@@ -59,9 +61,9 @@ public:
 		, m_start(start)
 		, m_end(end)
 		, m_frustum(frustum)
-		, m_visibility_flags(visibility_flags)
 		, m_layer_masks(layer_masks)
 		, m_layer_mask(layer_mask)
+		, m_sphere_to_renderable_map(sphere_to_renderable_map)
 	{
 		setJobName("CullingJob");
 		m_results.reserve(end - start);
@@ -77,9 +79,9 @@ public:
 		doCulling(m_start,
 			&m_spheres[m_start],
 			&m_spheres[m_end],
-			m_visibility_flags,
 			&m_frustum,
 			&m_layer_masks[0],
+			&m_sphere_to_renderable_map[0],
 			m_layer_mask,
 			m_results);
 		m_is_executed = true;
@@ -88,8 +90,8 @@ public:
 private:
 	const CullingSystem::InputSpheres& m_spheres;
 	CullingSystem::Subresults& m_results;
-	const VisibilityFlags& m_visibility_flags;
 	const LayerMasks& m_layer_masks;
+	const SphereToRenderableMap& m_sphere_to_renderable_map;
 	int64 m_layer_mask;
 	int m_start;
 	int m_end;
@@ -103,14 +105,18 @@ public:
 	CullingSystemImpl(MTJD::Manager& mtjd_manager, IAllocator& allocator)
 		: m_allocator(allocator)
 		, m_job_allocator(allocator)
-		, m_visibility_flags(allocator)
 		, m_spheres(allocator)
 		, m_result(allocator)
 		, m_sync_point(true, allocator)
 		, m_mtjd_manager(mtjd_manager)
 		, m_layer_masks(m_allocator)
+		, m_sphere_to_renderable_map(m_allocator)
+		, m_renderable_to_sphere_map(m_allocator)
 	{
 		m_result.emplace(m_allocator);
+		m_renderable_to_sphere_map.reserve(5000);
+		m_sphere_to_renderable_map.reserve(5000);
+		m_spheres.reserve(5000);
 		int cpu_count = (int)m_mtjd_manager.getCpuThreadsCount();
 		while (m_result.size() < cpu_count)
 		{
@@ -125,8 +131,9 @@ public:
 	void clear() override
 	{
 		m_spheres.clear();
-		m_visibility_flags.clear();
 		m_layer_masks.clear();
+		m_renderable_to_sphere_map.clear();
+		m_sphere_to_renderable_map.clear();
 	}
 
 
@@ -154,9 +161,9 @@ public:
 			doCulling(0,
 				&m_spheres[0],
 				&m_spheres.back(),
-				m_visibility_flags,
 				&frustum,
 				&m_layer_masks[0],
+				&m_sphere_to_renderable_map[0],
 				layer_mask,
 				m_result[0]);
 		}
@@ -167,8 +174,16 @@ public:
 	void cullToFrustumAsync(const Frustum& frustum, int64 layer_mask) override
 	{
 		int count = m_spheres.size();
+		for(auto& i : m_result)
+		{
+			i.clear();
+		}
 
-		if (count == 0) return;
+		if (count == 0)
+		{
+			m_is_async_result = false;
+			return;
+		}
 
 		if (count < m_result.size() * MIN_ENTITIES_PER_THREAD)
 		{
@@ -186,8 +201,8 @@ public:
 		{
 			m_result[i].clear();
 			CullingJob* cj = LUMIX_NEW(m_job_allocator, CullingJob)(m_spheres,
-				m_visibility_flags,
 				m_layer_masks,
+				m_sphere_to_renderable_map,
 				layer_mask,
 				m_result[i],
 				i * step,
@@ -202,8 +217,8 @@ public:
 
 		m_result[i].clear();
 		CullingJob* cj = LUMIX_NEW(m_job_allocator, CullingJob)(m_spheres,
-			m_visibility_flags,
 			m_layer_masks,
+			m_sphere_to_renderable_map,
 			layer_mask,
 			m_result[i],
 			i * step,
@@ -222,69 +237,97 @@ public:
 	}
 
 
-	void setLayerMask(int index, int64 layer) override { m_layer_masks[index] = layer; }
-
-
-	int64 getLayerMask(int index) override { return m_layer_masks[index]; }
-
-
-	void enableStatic(int index) override { m_visibility_flags[index] = true; }
-
-
-	void disableStatic(int index) override { m_visibility_flags[index] = false; }
-
-
-	void addStatic(const Sphere& sphere) override
+	void setLayerMask(ComponentIndex renderable, int64 layer) override
 	{
+		m_layer_masks[m_renderable_to_sphere_map[renderable]] = layer;
+	}
+
+
+	int64 getLayerMask(ComponentIndex renderable) override
+	{
+		return m_layer_masks[m_renderable_to_sphere_map[renderable]];
+	}
+
+
+	void addStatic(ComponentIndex renderable, const Sphere& sphere) override
+	{
+		if (renderable < m_renderable_to_sphere_map.size() && m_renderable_to_sphere_map[renderable] != -1)
+		{
+			ASSERT(false);
+			return;
+		}
+
 		m_spheres.push(sphere);
-		m_visibility_flags.push(true);
+		m_sphere_to_renderable_map.push(renderable);
+		while(renderable >= m_renderable_to_sphere_map.size())
+		{
+			m_renderable_to_sphere_map.push(-1);
+		}
+		m_renderable_to_sphere_map[renderable] = m_spheres.size() - 1;
 		m_layer_masks.push(1);
 	}
 
 
-	void removeStatic(int index) override
+	void removeStatic(ComponentIndex renderable) override
 	{
-		ASSERT(index <= m_spheres.size());
+		int index = m_renderable_to_sphere_map[renderable];
+		if (index < 0) return;
+		ASSERT(index < m_spheres.size());
 
-		m_spheres.erase(index);
-		m_visibility_flags.erase(index);
-		m_layer_masks.erase(index);
+		m_renderable_to_sphere_map[m_sphere_to_renderable_map.back()] = index;
+		m_spheres[index] = m_spheres.back();
+		m_sphere_to_renderable_map[index] = m_sphere_to_renderable_map.back();
+		m_layer_masks[index] = m_layer_masks.back();
+
+		m_spheres.pop();
+		m_sphere_to_renderable_map.pop();
+		m_layer_masks.pop();
+		m_renderable_to_sphere_map[renderable] = -1;
 	}
 
 
-	void updateBoundingRadius(float radius, int index) override
+	void updateBoundingRadius(float radius, ComponentIndex renderable) override
 	{
-		m_spheres[index].m_radius = radius;
+		m_spheres[m_renderable_to_sphere_map[renderable]].m_radius = radius;
 	}
 
 
-	void updateBoundingPosition(const Vec3& position, int index) override
+	void updateBoundingPosition(const Vec3& position, ComponentIndex renderable) override
 	{
-		m_spheres[index].m_position = position;
+		m_spheres[m_renderable_to_sphere_map[renderable]].m_position = position;
 	}
 
 
-	void insert(const InputSpheres& spheres) override
+	void insert(const InputSpheres& spheres, const Array<ComponentIndex>& renderables) override
 	{
 		for (int i = 0; i < spheres.size(); i++)
 		{
 			m_spheres.push(spheres[i]);
-			m_visibility_flags.push(true);
+			while(m_renderable_to_sphere_map.size() <= renderables[i])
+			{
+				m_renderable_to_sphere_map.push(-1);
+			}
+			m_renderable_to_sphere_map[renderables[i]] = m_spheres.size() - 1;
+			m_sphere_to_renderable_map.push(renderables[i]);
 			m_layer_masks.push(1);
 		}
 	}
 
 
-	const InputSpheres& getSpheres() override { return m_spheres; }
+	const Sphere& getSphere(ComponentIndex renderable) override
+	{
+		return m_spheres[m_renderable_to_sphere_map[renderable]];
+	}
 
 
 private:
 	IAllocator& m_allocator;
-	FreeList<CullingJob, 8> m_job_allocator;
-	VisibilityFlags m_visibility_flags;
+	FreeList<CullingJob, 16> m_job_allocator;
 	InputSpheres m_spheres;
 	Results m_result;
 	LayerMasks m_layer_masks;
+	RenderabletoSphereMap m_renderable_to_sphere_map;
+	SphereToRenderableMap m_sphere_to_renderable_map;
 
 	MTJD::Manager& m_mtjd_manager;
 	MTJD::Group m_sync_point;

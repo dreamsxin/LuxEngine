@@ -1,9 +1,9 @@
 #include "unit_tests/suite/lumix_unit_tests.h"
 
-#include "core/mt/lock_free_fixed_queue.h"
-#include "core/mt/transaction.h"
-#include "core/mt/task.h"
-#include "core/mt/thread.h"
+#include "engine/core/mt/lock_free_fixed_queue.h"
+#include "engine/core/mt/transaction.h"
+#include "engine/core/mt/task.h"
+#include "engine/core/mt/thread.h"
 
 namespace
 {
@@ -34,7 +34,7 @@ namespace
 			while (!m_trans_queue->isAborted())
 			{
 				AsynTrans* tr = m_trans_queue->pop(true);
-				if (NULL == tr)
+				if (nullptr == tr)
 					break;
 
 				tr->data.proc_count++;
@@ -155,9 +155,9 @@ namespace
 
 		for (size_t i = 0; i < itemsCount; i++)
 		{
-			LUMIX_EXPECT_EQ(testItems[i].idx, i);
-			LUMIX_EXPECT_EQ(testItems[i].proc_count, 1);
-			LUMIX_EXPECT_NE(testItems[i].thread_id, Lumix::MT::getCurrentThreadID());
+			LUMIX_EXPECT(testItems[i].idx == i);
+			LUMIX_EXPECT(testItems[i].proc_count == 1);
+			LUMIX_EXPECT(testItems[i].thread_id != Lumix::MT::getCurrentThreadID());
 		}
 
 		allocator.deallocate(testItems);
@@ -202,9 +202,9 @@ namespace
 
 		for (size_t i = 0; i < itemsCount; i++)
 		{
-			LUMIX_EXPECT_EQ(testItems[i].idx, i);
-			LUMIX_EXPECT_EQ(testItems[i].proc_count, 1);
-			LUMIX_EXPECT_NE(testItems[i].thread_id, Lumix::MT::getCurrentThreadID());
+			LUMIX_EXPECT(testItems[i].idx == i);
+			LUMIX_EXPECT(testItems[i].proc_count == 1);
+			LUMIX_EXPECT(testItems[i].thread_id != Lumix::MT::getCurrentThreadID());
 		}
 
 		allocator.deallocate(testItems);

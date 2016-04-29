@@ -1,6 +1,6 @@
 #pragma once
 
-#include "core/resource_manager_base.h"
+#include "engine/core/resource_manager_base.h"
 
 namespace Lumix
 {
@@ -11,15 +11,12 @@ namespace Lumix
 	class LUMIX_RENDERER_API ModelManager : public ResourceManagerBase
 	{
 	public:
-		ModelManager(IAllocator& allocator, Renderer& renderer)
+		ModelManager(IAllocator& allocator)
 			: ResourceManagerBase(allocator)
 			, m_allocator(allocator)
-			, m_renderer(renderer)
 		{}
 
 		~ModelManager() {}
-
-		Renderer& getRenderer() { return m_renderer; }
 
 	protected:
 		Resource* createResource(const Path& path) override;
@@ -27,6 +24,5 @@ namespace Lumix
 
 	private:
 		IAllocator& m_allocator;
-		Renderer& m_renderer;
 	};
 }

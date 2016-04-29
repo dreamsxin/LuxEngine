@@ -1,7 +1,5 @@
-#pragma once
-
 #include "path_utils.h"
-#include "core/string.h"
+#include "engine/core/string.h"
 
 
 namespace Lumix

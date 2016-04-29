@@ -1,9 +1,9 @@
 #pragma once
 
 
-#include "lumix.h"
-#include "core/iallocator.h"
-#include "core/mt/sync.h"
+#include "engine/lumix.h"
+#include "engine/core/iallocator.h"
+#include "engine/core/mt/sync.h"
 
 
 namespace Lumix
@@ -30,6 +30,7 @@ public:
 	static bool getFunction(StackNode* node, char* out, int max_size, int* line);
 	static StackNode* getParent(StackNode* node);
 	static int getPath(StackNode* node, StackNode** output, int max_size);
+	static void refreshModuleList();
 
 private:
 	StackNode* insertChildren(StackNode* node, void** instruction, void** stack);
@@ -53,12 +54,15 @@ public:
 	};
 
 public:
-	Allocator(IAllocator& source);
+	explicit Allocator(IAllocator& source);
 	virtual ~Allocator();
 
 	void* allocate(size_t size) override;
 	void deallocate(void* ptr) override;
 	void* reallocate(void* ptr, size_t size) override;
+	void* allocate_aligned(size_t size, size_t align) override;
+	void deallocate_aligned(void* ptr) override;
+	void* reallocate_aligned(void* ptr, size_t size, size_t align) override;
 	size_t getTotalSize() const { return m_total_size; }
 	void checkGuards();
 

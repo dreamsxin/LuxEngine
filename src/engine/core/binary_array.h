@@ -1,7 +1,7 @@
 #pragma once
 
 
-#include "lumix.h"
+#include "engine/lumix.h"
 
 
 namespace Lumix
@@ -53,7 +53,7 @@ namespace Lumix
 			};
 
 		public:
-			BinaryArray(IAllocator& allocator);
+			explicit BinaryArray(IAllocator& allocator);
 			~BinaryArray();
 
 			Accessor operator[](int index);
@@ -63,6 +63,7 @@ namespace Lumix
 			void reserve(int capacity);
 			void resize(int capacity);
 			void erase(int index);
+			void eraseFast(int index);
 			void clear();
 			void push(bool value);
 			void pop();

@@ -1,16 +1,7 @@
 #pragma once
 
 
-#include "lumix.h"
-
-
-#ifdef max
-#undef max
-#endif
-
-#ifdef min
-#undef min
-#endif
+#include "engine/lumix.h"
 
 
 namespace Lumix
@@ -21,6 +12,7 @@ namespace Math
 {
 const float PI = 3.14159265f;
 const float SQRT2 = 1.41421356237f;
+const float SQRT3 = 1.73205080757f;
 
 LUMIX_ENGINE_API bool getRayPlaneIntersecion(const Vec3& origin,
 	const Vec3& dir,
@@ -48,22 +40,12 @@ LUMIX_ENGINE_API bool getRayTriangleIntersection(const Vec3& origin,
 	const Vec3& c,
 	float* out_t);
 
-template <typename T> LUMIX_FORCE_INLINE T min(T a, T b)
+template <typename T> LUMIX_FORCE_INLINE T minimum(T a, T b)
 {
 	return a < b ? a : b;
 }
 
-template <typename T> LUMIX_FORCE_INLINE T minValue(T a, T b)
-{
-	return a < b ? a : b;
-}
-
-template <typename T> LUMIX_FORCE_INLINE T max(T a, T b)
-{
-	return a < b ? b : a;
-}
-
-template <typename T> LUMIX_FORCE_INLINE T maxValue(T a, T b)
+template <typename T> LUMIX_FORCE_INLINE T maximum(T a, T b)
 {
 	return a < b ? b : a;
 }
@@ -86,7 +68,31 @@ template <typename T> LUMIX_FORCE_INLINE T signum(T a)
 template <typename T>
 LUMIX_FORCE_INLINE T clamp(T value, T min_value, T max_value)
 {
-	return min(max(value, min_value), max_value);
+	return minimum(maximum(value, min_value), max_value);
+}
+
+inline uint32 nextPow2(uint32 v)
+{
+	v--;
+	v |= v >> 1;
+	v |= v >> 2;
+	v |= v >> 4;
+	v |= v >> 8;
+	v |= v >> 16;
+	v++;
+	return v;
+}
+
+inline uint32 log2(uint32 v)
+{
+	uint32 r;
+	uint32 shift;
+	r = (v > 0xffff) << 4; v >>= r;
+	shift = (v > 0xff) << 3; v >>= shift; r |= shift;
+	shift = (v > 0xf) << 2; v >>= shift; r |= shift;
+	shift = (v > 0x3) << 1; v >>= shift; r |= shift;
+	r |= (v >> 1);
+	return r;
 }
 
 template <typename T> bool isPowOfTwo(T n)
@@ -114,5 +120,14 @@ inline float easeInOut(float t)
 	--scaled_t;
 	return -0.5f * (scaled_t * (scaled_t - 2) - 1);
 }
-}
-}
+
+
+LUMIX_ENGINE_API float pow(float base, float exponent);
+LUMIX_ENGINE_API uint32 rand();
+LUMIX_ENGINE_API uint32 rand(uint32 from, uint32 to);
+LUMIX_ENGINE_API float randFloat();
+LUMIX_ENGINE_API float randFloat(float from, float to);
+
+
+} // namespace Math
+} // namespace Lumix

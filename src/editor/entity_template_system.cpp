@@ -1,28 +1,20 @@
 #include "entity_template_system.h"
-#include "core/array.h"
-#include "core/blob.h"
-#include "core/crc32.h"
-#include "core/json_serializer.h"
-#include "core/math_utils.h"
-#include "core/string.h"
+#include "engine/core/array.h"
+#include "engine/core/blob.h"
+#include "engine/core/crc32.h"
+#include "engine/core/json_serializer.h"
+#include "engine/core/math_utils.h"
+#include "engine/core/string.h"
 #include "editor/ieditor_command.h"
 #include "editor/world_editor.h"
-#include "engine.h"
-#include "iplugin.h"
-#include "universe/universe.h"
+#include "engine/engine.h"
+#include "engine/iplugin.h"
+#include "engine/universe/universe.h"
 #include <cstdlib>
 
 
 namespace Lumix
 {
-
-
-static const uint32 CAMERA_HASH = Lumix::crc32("camera");
-static const uint32 GLOBAL_LIGHT_HASH = Lumix::crc32("global_light");
-static const uint32 POINT_LIGHT_HASH = Lumix::crc32("point_light");
-static const uint32 SCRIPT_HASH = Lumix::crc32("script");
-static const uint32 ANIMABLE_HASH = Lumix::crc32("animable");
-static const uint32 TERRAIN_HASH = Lumix::crc32("terrain");
 
 
 class EntityTemplateSystemImpl : public EntityTemplateSystem
@@ -31,9 +23,9 @@ private:
 	class CreateTemplateCommand : public IEditorCommand
 	{
 	public:
-		CreateTemplateCommand(WorldEditor& editor)
-			: m_entity_system(static_cast<EntityTemplateSystemImpl&>(
-				  editor.getEntityTemplateSystem()))
+		explicit CreateTemplateCommand(WorldEditor& editor)
+			: m_entity_system(
+				  static_cast<EntityTemplateSystemImpl&>(editor.getEntityTemplateSystem()))
 			, m_editor(editor)
 			, m_name(editor.getAllocator())
 		{
@@ -41,10 +33,10 @@ private:
 
 
 		CreateTemplateCommand(WorldEditor& editor,
-							  const char* template_name,
-							  Entity entity_template)
-			: m_entity_system(static_cast<EntityTemplateSystemImpl&>(
-				  editor.getEntityTemplateSystem()))
+			const char* template_name,
+			Entity entity_template)
+			: m_entity_system(
+				  static_cast<EntityTemplateSystemImpl&>(editor.getEntityTemplateSystem()))
 			, m_name(template_name, editor.getAllocator())
 			, m_entity(entity_template)
 			, m_editor(editor)
@@ -118,23 +110,25 @@ private:
 	class CreateInstanceCommand : public IEditorCommand
 	{
 	public:
-		CreateInstanceCommand(WorldEditor& editor)
-			: m_entity_system(static_cast<EntityTemplateSystemImpl&>(
-				  editor.getEntityTemplateSystem()))
+		explicit CreateInstanceCommand(WorldEditor& editor)
+			: m_entity_system(
+				  static_cast<EntityTemplateSystemImpl&>(editor.getEntityTemplateSystem()))
 			, m_editor(editor)
 		{
 		}
 
 
 		CreateInstanceCommand(EntityTemplateSystemImpl& entity_system,
-							  WorldEditor& editor,
-							  const char* template_name,
-							  const Vec3& position)
+			WorldEditor& editor,
+			const char* template_name,
+			const Vec3& position,
+			const Quat& rot,
+			float size)
 			: m_entity_system(entity_system)
 			, m_template_name_hash(crc32(template_name))
 			, m_position(position)
-			, m_rotation(Vec3(0, 1, 0),
-						 Math::degreesToRadians((float)(rand() % 360)))
+			, m_rotation(rot)
+			, m_size(size)
 			, m_editor(editor)
 		{
 		}
@@ -151,13 +145,13 @@ private:
 			serializer.serialize("rotation_y", m_rotation.y);
 			serializer.serialize("rotation_z", m_rotation.z);
 			serializer.serialize("rotation_w", m_rotation.w);
+			serializer.serialize("size", m_size);
 		}
 
 
 		void deserialize(JsonSerializer& serializer) override
 		{
-			serializer.deserialize(
-				"template_name_hash", m_template_name_hash, 0);
+			serializer.deserialize("template_name_hash", m_template_name_hash, 0);
 			serializer.deserialize("entity", m_entity, -1);
 			serializer.deserialize("position_x", m_position.x, 0);
 			serializer.deserialize("position_y", m_position.y, 0);
@@ -166,27 +160,26 @@ private:
 			serializer.deserialize("rotation_y", m_rotation.y, 0);
 			serializer.deserialize("rotation_z", m_rotation.z, 0);
 			serializer.deserialize("rotation_w", m_rotation.w, 0);
+			serializer.deserialize("size", m_size, 1);
 		}
 
 
 		bool execute() override
 		{
-			int instance_index =
-				m_entity_system.m_instances.find(m_template_name_hash);
+			int instance_index = m_entity_system.m_instances.find(m_template_name_hash);
 			if (instance_index >= 0)
 			{
 				Universe* universe = m_entity_system.m_editor.getUniverse();
 				m_entity = universe->createEntity(m_position, m_rotation);
+				universe->setScale(m_entity, m_size);
 
 				m_entity_system.m_instances.at(instance_index).push(m_entity);
-				Entity template_entity =
-					m_entity_system.m_instances.at(instance_index)[0];
+				Entity template_entity = m_entity_system.m_instances.at(instance_index)[0];
 				const WorldEditor::ComponentList& template_cmps =
 					m_editor.getComponents(template_entity);
 				for (int i = 0; i < template_cmps.size(); ++i)
 				{
-					m_entity_system.m_editor.cloneComponent(template_cmps[i],
-															m_entity);
+					m_entity_system.m_editor.cloneComponent(template_cmps[i], m_entity);
 				}
 			}
 			else
@@ -199,8 +192,7 @@ private:
 
 		void undo() override
 		{
-			const WorldEditor::ComponentList& cmps =
-				m_editor.getComponents(m_entity);
+			const WorldEditor::ComponentList& cmps = m_editor.getComponents(m_entity);
 			for (int i = 0; i < cmps.size(); ++i)
 			{
 				cmps[i].scene->destroyComponent(cmps[i].index, cmps[i].type);
@@ -215,8 +207,7 @@ private:
 
 		uint32 getType() override
 		{
-			static const uint32 hash =
-				crc32("create_entity_template_instance");
+			static const uint32 hash = crc32("create_entity_template_instance");
 			return hash;
 		}
 
@@ -230,10 +221,11 @@ private:
 		Entity m_entity;
 		Vec3 m_position;
 		Quat m_rotation;
+		float m_size;
 	};
 
 public:
-	EntityTemplateSystemImpl(WorldEditor& editor)
+	explicit EntityTemplateSystemImpl(WorldEditor& editor)
 		: m_editor(editor)
 		, m_universe(nullptr)
 		, m_instances(editor.getAllocator())
@@ -241,18 +233,14 @@ public:
 		, m_template_names(editor.getAllocator())
 	{
 		editor.universeCreated()
-			.bind<EntityTemplateSystemImpl,
-				  &EntityTemplateSystemImpl::onUniverseCreated>(this);
+			.bind<EntityTemplateSystemImpl, &EntityTemplateSystemImpl::onUniverseCreated>(this);
 		editor.universeDestroyed()
-			.bind<EntityTemplateSystemImpl,
-				  &EntityTemplateSystemImpl::onUniverseDestroyed>(this);
+			.bind<EntityTemplateSystemImpl, &EntityTemplateSystemImpl::onUniverseDestroyed>(this);
 		setUniverse(editor.getUniverse());
-		editor.registerEditorCommandCreator(
-			"create_entity_template_instance",
+		editor.registerEditorCommandCreator("create_entity_template_instance",
 			&EntityTemplateSystemImpl::createCreateInstanceCommand);
 		editor.registerEditorCommandCreator(
-			"create_entity_template",
-			&EntityTemplateSystemImpl::createCreateTemplateCommand);
+			"create_entity_template", &EntityTemplateSystemImpl::createCreateTemplateCommand);
 	}
 
 
@@ -271,11 +259,9 @@ public:
 	~EntityTemplateSystemImpl()
 	{
 		m_editor.universeCreated()
-			.unbind<EntityTemplateSystemImpl,
-					&EntityTemplateSystemImpl::onUniverseCreated>(this);
+			.unbind<EntityTemplateSystemImpl, &EntityTemplateSystemImpl::onUniverseCreated>(this);
 		m_editor.universeDestroyed()
-			.unbind<EntityTemplateSystemImpl,
-					&EntityTemplateSystemImpl::onUniverseDestroyed>(this);
+			.unbind<EntityTemplateSystemImpl, &EntityTemplateSystemImpl::onUniverseDestroyed>(this);
 		setUniverse(nullptr);
 	}
 
@@ -288,15 +274,14 @@ public:
 		if (m_universe)
 		{
 			m_universe->entityDestroyed()
-				.unbind<EntityTemplateSystemImpl,
-						&EntityTemplateSystemImpl::onEntityDestroyed>(this);
+				.unbind<EntityTemplateSystemImpl, &EntityTemplateSystemImpl::onEntityDestroyed>(
+					this);
 		}
 		m_universe = universe;
 		if (m_universe)
 		{
 			m_universe->entityDestroyed()
-				.bind<EntityTemplateSystemImpl,
-					  &EntityTemplateSystemImpl::onEntityDestroyed>(this);
+				.bind<EntityTemplateSystemImpl, &EntityTemplateSystemImpl::onEntityDestroyed>(this);
 		}
 	}
 
@@ -340,30 +325,7 @@ public:
 	}
 
 
-	Entity createInstanceNoCommand(uint32 name_hash, const Vec3& position) override
-	{
-		int instance_index = m_instances.find(name_hash);
-		ASSERT(instance_index >= 0);
-		if (instance_index < 0) return INVALID_ENTITY;
-
-		Universe* universe = m_editor.getUniverse();
-		float random_angle = Math::degreesToRadians((float)(rand() % 360));
-		Lumix::Quat rotation(Lumix::Vec3(0, 1, 0), random_angle);
-		Entity entity = universe->createEntity(position, rotation);
-
-		m_instances.at(instance_index).push(entity);
-		Entity template_entity = m_instances.at(instance_index)[0];
-		const auto& template_cmps = m_editor.getComponents(template_entity);
-		for (const auto& cmp : template_cmps)
-		{
-			m_editor.cloneComponent(cmp, entity);
-		}
-		return entity;
-	}
-
-
-	void createTemplateFromEntity(const char* name,
-										  Entity entity) override
+	void createTemplateFromEntity(const char* name, Entity entity) override
 	{
 		CreateTemplateCommand* command =
 			LUMIX_NEW(m_editor.getAllocator(), CreateTemplateCommand)(m_editor, name, entity);
@@ -388,25 +350,22 @@ public:
 	}
 
 
-	const Array<Entity>&
-	getInstances(uint32 template_name_hash) override
+	const Array<Entity>& getInstances(uint32 template_name_hash) override
 	{
 		int instances_index = m_instances.find(template_name_hash);
 		if (instances_index < 0)
 		{
-			m_instances.insert(template_name_hash,
-							   Array<Entity>(m_editor.getAllocator()));
+			m_instances.insert(template_name_hash, Array<Entity>(m_editor.getAllocator()));
 			instances_index = m_instances.find(template_name_hash);
 		}
 		return m_instances.at(instances_index);
 	}
 
 
-	Entity createInstance(const char* name,
-								  const Vec3& position) override
+	Entity createInstance(const char* name, const Vec3& position, const Quat& rotation, float size) override
 	{
 		CreateInstanceCommand* command = LUMIX_NEW(m_editor.getAllocator(), CreateInstanceCommand)(
-			*this, m_editor, name, position);
+			*this, m_editor, name, position, rotation, size);
 		m_editor.executeCommand(command);
 		return command->getEntity();
 	}
@@ -466,10 +425,7 @@ public:
 	}
 
 
-	Array<string>& getTemplateNames() override
-	{
-		return m_template_names;
-	}
+	Array<string>& getTemplateNames() override { return m_template_names; }
 
 
 	DelegateList<void()>& updated() override { return m_updated; }

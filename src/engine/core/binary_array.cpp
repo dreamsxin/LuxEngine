@@ -1,13 +1,12 @@
 #include "binary_array.h"
-#include "core/iallocator.h"
-#include "core/string.h"
+#include "engine/core/iallocator.h"
+#include "engine/core/string.h"
 
 
 namespace Lumix
 {
 
-static const int BITS_IN_BYTE = 8;
-static const int BITMASK_7BIT = sizeof(int32) * BITS_IN_BYTE - 1;
+static const int BITMASK_7BIT = sizeof(int32) * 8 - 1;
 
 BinaryArray::StoreType BinaryArray::BINARY_MASK[32];
 BinaryArray::StoreType BinaryArray::INDEX_BIT[32];
@@ -43,6 +42,13 @@ BinaryArray::BinaryArray(IAllocator& allocator)
 BinaryArray::~BinaryArray()
 {
 	m_allocator.deallocate(m_data);
+}
+
+
+void BinaryArray::eraseFast(int index)
+{
+	this->operator[](index) = back();
+	pop();
 }
 
 

@@ -1,7 +1,7 @@
-#include "lumix.h"
-#include "core/path.h"
-#include "core/resource_manager.h"
-#include "core/resource_manager_base.h"
+#include "engine/lumix.h"
+#include "engine/core/path.h"
+#include "engine/core/resource_manager.h"
+#include "engine/core/resource_manager_base.h"
 
 namespace Lumix
 {
@@ -39,7 +39,15 @@ namespace Lumix
 		m_resource_managers.erase(id); 
 	}
 
-	void ResourceManager::reload(const char* path)
+	void ResourceManager::removeUnreferenced()
+	{
+		for (auto* i : m_resource_managers)
+		{
+			i->removeUnreferenced();
+		}
+	}
+
+	void ResourceManager::reload(const Path& path)
 	{
 		for (auto iter = m_resource_managers.begin(), end = m_resource_managers.end(); iter != end; ++iter)
 		{
